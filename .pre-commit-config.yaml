@@ -1,0 +1,29 @@
+# Installation: `make hooks`. Alle Hooks laufen lokal über die uv-Umgebung des
+# Backends – kein Download fremder Hook-Repos nötig.
+repos:
+  - repo: local
+    hooks:
+      - id: detect-secrets
+        name: detect-secrets (Secret-Scan)
+        entry: uv run --project backend detect-secrets-hook --baseline .secrets.baseline
+        language: system
+        exclude: (^|/)(uv\.lock|package-lock\.json)$
+
+      - id: forbid-data-and-env
+        name: keine Aufzeichnungen/.env committen
+        entry: "Dateien aus data/ oder .env-Dateien dürfen nicht ins öffentliche Repo."
+        language: fail
+        files: (^data/|(^|/)\.env(\..+)?$)
+        exclude: (^|/)\.env\.example$
+
+      - id: ruff-check
+        name: ruff check
+        entry: uv run --project backend ruff check --config backend/pyproject.toml
+        language: system
+        types: [python]
+
+      - id: ruff-format
+        name: ruff format
+        entry: uv run --project backend ruff format --check --config backend/pyproject.toml
+        language: system
+        types: [python]

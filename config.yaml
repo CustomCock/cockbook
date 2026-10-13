@@ -1,0 +1,23 @@
+# CockBook Konfiguration. Schema: backend/cockbook/config.py
+# KEINE Secrets hier eintragen – API-Keys nur über Umgebungsvariablen/Keyring.
+
+logging:
+  level: INFO        # DEBUG | INFO | WARNING | ERROR | CRITICAL
+  format: console    # console | json
+
+exchanges:
+  - name: binance_usdm
+    enabled: true
+    symbols:
+      - symbol: BTCUSDT
+
+aggregation:
+  interval_ms: 100   # Breite einer Heatmap-Spalte
+  bucket_ticks: 1    # Preis-Bucket als Vielfaches der Tick-Größe
+
+server:
+  host: 127.0.0.1    # nur Loopback erlaubt
+  port: 8765
+
+recorder:
+  data_dir: data     # gitignored
