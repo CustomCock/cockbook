@@ -1,6 +1,7 @@
 # CockBook
 
-> **Status: Work in Progress** – aktuell Phase 0 (Grundgerüst). Noch keine Live-Daten, keine Heatmap.
+> **Status: Work in Progress** – Phase 1: Binance-USDⓈ-M-Adapter, lokales Orderbuch, Recorder,
+> Terminal-Ansicht. Noch keine Heatmap.
 
 Freies, lokal laufendes Orderflow- & Liquidity-Heatmap-Tool für Krypto-Märkte, inspiriert von Bookmap.
 Es nutzt ausschließlich öffentliche, kostenlose Börsen-Datenfeeds und läuft unter Ubuntu und Windows.
@@ -33,6 +34,20 @@ make test      # pytest
 make lint      # ruff, mypy, tsc
 make dev       # Backend + Frontend-Dev-Server (http://127.0.0.1:5173)
 ```
+
+### Phase 1: Orderbuch & Aufzeichnung
+
+```bash
+make book      # Top-10 Bid/Ask live im Terminal (python -m cockbook.debug_book)
+make record    # nur aufzeichnen -> data/<exchange>/<symbol>/YYYY-MM-DDTHH.jsonl.zst
+make sim       # lokaler Binance-Simulator (Port 9876), z. B. ohne Internet/Börsenzugang
+```
+
+Simulator nutzen: in einem Terminal `make sim`, in einem zweiten `make book CONFIG=config.sim.yaml`.
+Aufzeichnungen aus dem Simulator landen getrennt unter `data/sim/`.
+
+Hinweis: Binance sperrt den Zugriff aus bestimmten Ländern (HTTP 451, „restricted location“).
+CockBook nutzt ausschließlich die offiziellen Endpoints und umgeht solche Sperren nicht.
 
 Ohne `make`:
 

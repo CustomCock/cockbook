@@ -120,3 +120,38 @@ MARKET_EVENT_TYPES: tuple[type[Event], ...] = (
     Liquidation,
     L3Order,
 )
+
+
+# --- Infrastruktur-Events -------------------------------------------------------------
+# Keine Marktdaten im engeren Sinn, laufen aber über denselben Bus, damit Recorder,
+# Replay und Frontend nichts über einzelne Adapter wissen müssen.
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class InstrumentInfo(Event):
+    """Handelsregeln eines Symbols. Wird vom Adapter vor allen Marktdaten publiziert."""
+
+    tick_size: Decimal
+    step_size: Decimal
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class BookSyncStatus(Event):
+    """Orderbuch-Sync-Zustand. ``synced=False`` heißt: lokales Buch ungültig bis zum
+    nächsten ``BookSnapshot`` (Lücke, Reconnect, Validierungsfehler …)."""
+
+    synced: bool
+    reason: str
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class RawMessage(Event):
+    """Unveränderte Rohnachricht der Börse – Futter für Recorder und später Replay.
+
+    ``stream`` benennt die Quelle (z. B. ``depth``, ``aggTrade``, ``rest:depth``,
+    ``meta``). ``payload`` ist exakt der empfangene JSON-Text, damit ein Replay durch
+    *dieselbe* Parse- und Sync-Logik laufen kann wie live.
+    """
+
+    stream: str
+    payload: str

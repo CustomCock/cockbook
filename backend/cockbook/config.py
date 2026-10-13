@@ -28,10 +28,49 @@ class SymbolConfig(_Model):
     symbol: Annotated[str, Field(min_length=1)]
 
 
-class ExchangeConfig(_Model):
-    name: Annotated[str, Field(min_length=1)]
+class ReconnectConfig(_Model):
+    initial_backoff_s: Annotated[float, Field(gt=0)] = 1.0
+    max_backoff_s: Annotated[float, Field(gt=0)] = 60.0
+    # Keine Nachricht in diesem Zeitraum -> Verbindung gilt als tot, Reconnect.
+    stale_timeout_s: Annotated[float, Field(gt=0)] = 30.0
+    # Nach so langer stabiler Verbindung wird der Backoff zurückgesetzt.
+    stable_after_s: Annotated[float, Field(gt=0)] = 60.0
+
+
+type DepthLimit = Literal[5, 10, 20, 50, 100, 500, 1000]
+
+
+class BookValidationConfig(_Model):
+    enabled: bool = True
+    interval_s: Annotated[float, Field(gt=0)] = 300.0
+    snapshot_limit: DepthLimit = 1000
+    # Wie viele angewendete Deltas für den Abgleich vorgehalten werden. Muss die
+    # REST-Latenz abdecken (100 ms Stream -> 600 = 60 s).
+    history_updates: Annotated[int, Field(gt=0)] = 600
+    resync_on_mismatch: bool = True
+
+
+class BinanceUsdmConfig(_Model):
+    """Binance USDⓈ-M Futures. Weitere Börsen kommen als eigene Modelle dazu
+    (diskriminiert über ``name``)."""
+
+    name: Literal["binance_usdm"]
     enabled: bool = True
     symbols: list[SymbolConfig] = Field(default_factory=list)
+    rest_url: str = "https://fapi.binance.com"
+    ws_public_url: str = "wss://fstream.binance.com/public"
+    ws_market_url: str = "wss://fstream.binance.com/market"
+    depth_update_ms: Literal[100, 250, 500] = 100
+    snapshot_limit: DepthLimit = 1000
+    max_buffered_updates: Annotated[int, Field(gt=0)] = 10_000
+    # Refresh, wenn der Mid den inneren Anteil des Snapshot-Preisbereichs verlässt
+    # (außerhalb kennt das lokale Buch unveränderte Level nicht).
+    coverage_refresh_fraction: Annotated[float, Field(gt=0, le=1)] = 0.5
+    validation: BookValidationConfig = Field(default_factory=BookValidationConfig)
+    reconnect: ReconnectConfig = Field(default_factory=ReconnectConfig)
+
+
+type ExchangeConfig = BinanceUsdmConfig
 
 
 class AggregationConfig(_Model):
@@ -54,6 +93,8 @@ class ServerConfig(_Model):
 
 class RecorderConfig(_Model):
     data_dir: Path = Path("data")
+    flush_interval_s: Annotated[float, Field(gt=0)] = 5.0
+    zstd_level: Annotated[int, Field(ge=1, le=22)] = 9
 
 
 class AppConfig(_Model):

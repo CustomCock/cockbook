@@ -8,7 +8,7 @@ FRONTEND:= frontend
 CONFIG  ?= config.yaml
 PY      := $(UV) run --project $(BACKEND)
 
-.PHONY: help install hooks dev dev-backend dev-frontend test lint format record replay
+.PHONY: help install hooks dev dev-backend dev-frontend test lint format record book sim replay
 
 help:
 	@echo "install  – Backend- und Frontend-Abhängigkeiten installieren"
@@ -17,7 +17,9 @@ help:
 	@echo "test     – Backend-Tests (pytest)"
 	@echo "lint     – ruff, mypy, tsc"
 	@echo "format   – Code formatieren (ruff)"
-	@echo "record   – Recorder starten (Phase 1)"
+	@echo "record   – Recorder starten (schreibt nach data/)"
+	@echo "book     – Live-Orderbuch im Terminal (debug_book)"
+	@echo "sim      – lokaler Binance-Simulator auf Port 9876 (offline entwickeln)"
 	@echo "replay   – Replay starten (Phase 4)"
 
 install:
@@ -47,7 +49,13 @@ format:
 	cd $(BACKEND) && $(UV) run ruff format . && $(UV) run ruff check --fix .
 
 record:
-	@echo "Recorder ist noch nicht implementiert (Phase 1)." && exit 1
+	$(PY) python -m cockbook.recorder --config $(CONFIG)
+
+book:
+	$(PY) python -m cockbook.debug_book --config $(CONFIG)
+
+sim:
+	$(PY) python -m cockbook.sim.binance --port 9876
 
 replay:
 	@echo "Replay ist noch nicht implementiert (Phase 4)." && exit 1

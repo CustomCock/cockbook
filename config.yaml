@@ -10,6 +10,25 @@ exchanges:
     enabled: true
     symbols:
       - symbol: BTCUSDT
+    # Endpoints laut Doku (geroutet: /public = Depth, /market = aggTrade/forceOrder)
+    rest_url: https://fapi.binance.com
+    ws_public_url: wss://fstream.binance.com/public
+    ws_market_url: wss://fstream.binance.com/market
+    depth_update_ms: 100          # 100 | 250 | 500
+    snapshot_limit: 1000          # Gewicht 20 von 2400/min
+    max_buffered_updates: 10000
+    coverage_refresh_fraction: 0.5  # neuer Snapshot, wenn der Mid die innere Hälfte verlässt
+    validation:
+      enabled: true
+      interval_s: 300             # Abgleich lokales Buch vs. REST-Snapshot alle 5 min
+      snapshot_limit: 1000
+      history_updates: 600        # ~60 s bei 100 ms
+      resync_on_mismatch: true
+    reconnect:
+      initial_backoff_s: 1
+      max_backoff_s: 60
+      stale_timeout_s: 30         # keine Daten -> Verbindung tot
+      stable_after_s: 60
 
 aggregation:
   interval_ms: 100   # Breite einer Heatmap-Spalte
@@ -21,3 +40,5 @@ server:
 
 recorder:
   data_dir: data     # gitignored
+  flush_interval_s: 5
+  zstd_level: 9

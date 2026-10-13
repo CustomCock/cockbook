@@ -11,8 +11,9 @@ from cockbook.log import JsonFormatter, setup_logging
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_repo_config_is_valid() -> None:
-    cfg = load_config(REPO_ROOT / "config.yaml")
+@pytest.mark.parametrize("name", ["config.yaml", "config.sim.yaml"])
+def test_repo_configs_are_valid(name: str) -> None:
+    cfg = load_config(REPO_ROOT / name)
     assert cfg.server.host == "127.0.0.1"
     assert cfg.aggregation.interval_ms > 0
 

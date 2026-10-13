@@ -1,0 +1,4 @@
+{"timezone":"UTC","serverTime":1791923600000,"symbols":[
+ {"symbol":"ETHUSDT","status":"TRADING","filters":[{"filterType":"PRICE_FILTER","tickSize":"0.01","minPrice":"39.86","maxPrice":"306177"},{"filterType":"LOT_SIZE","stepSize":"0.001","minQty":"0.001","maxQty":"10000"}]},
+ {"symbol":"BTCUSDT","status":"TRADING","pricePrecision":2,"quantityPrecision":3,"filters":[{"filterType":"PRICE_FILTER","tickSize":"0.10","minPrice":"261.10","maxPrice":"809484"},{"filterType":"LOT_SIZE","stepSize":"0.001","minQty":"0.001","maxQty":"1000"},{"filterType":"MIN_NOTIONAL","notional":"100"}]}
+]}

@@ -5,8 +5,11 @@ description = "Orderflow- & Liquidity-Heatmap für Krypto (Backend)"
 license = "MIT"
 requires-python = ">=3.12"
 dependencies = [
+    "aiohttp>=3.14.5",
     "pydantic>=2.7",
     "pyyaml>=6.0",
+    "sortedcontainers>=2.4.0",
+    "zstandard>=0.25.0",
 ]
 
 [dependency-groups]
@@ -18,6 +21,7 @@ dev = [
     "types-pyyaml>=6.0",
     "pre-commit>=3.7",
     "detect-secrets>=1.5",
+    "sortedcontainers-stubs>=2.4.3",
 ]
 
 [build-system]
@@ -53,6 +57,10 @@ strict = true
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests dürfen per Polling auf Zustände warten (Fake-Server, Timeouts).
+"**/tests/**" = ["ASYNC109", "ASYNC110"]
 
 [tool.ruff.lint.isort]
 # explizit, damit Import-Sortierung aus Repo-Root (pre-commit) und backend/ identisch ist
