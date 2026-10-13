@@ -14,7 +14,7 @@ help:
 	@echo "install  – Backend- und Frontend-Abhängigkeiten installieren"
 	@echo "hooks    – Pre-Commit-Hooks (Secret-Scan, ruff) installieren"
 	@echo "dev      – Backend + Frontend-Dev-Server parallel starten"
-	@echo "test     – Backend-Tests (pytest)"
+	@echo "test     – Tests (pytest + vitest)"
 	@echo "lint     – ruff, mypy, tsc"
 	@echo "format   – Code formatieren (ruff)"
 	@echo "record   – Recorder starten (schreibt nach data/)"
@@ -40,6 +40,7 @@ dev-frontend:
 
 test:
 	cd $(BACKEND) && $(UV) run pytest
+	cd $(FRONTEND) && $(NPM) test
 
 lint:
 	cd $(BACKEND) && $(UV) run ruff check . && $(UV) run ruff format --check . && $(UV) run mypy cockbook tests

@@ -1,15 +1,171 @@
 :root {
   color-scheme: dark;
   --bg: #0b0e13;
+  --panel: #0f131a;
   --fg: #c9d1d9;
+  --muted: #8b95a3;
+  --ok: #3ddc97;
+  --bad: #ff5d73;
+  --accent: #b884ff;
+}
+
+* {
+  box-sizing: border-box;
 }
 
 html,
-body,
-#app {
+body {
   margin: 0;
   height: 100%;
   background: var(--bg);
   color: var(--fg);
   font-family: ui-monospace, "Cascadia Code", "DejaVu Sans Mono", monospace;
+  font-size: 13px;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+}
+
+#bar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 6px 12px;
+  background: var(--panel);
+  border-bottom: 1px solid #1c2330;
+  flex-wrap: wrap;
+}
+
+#symbol {
+  font-weight: bold;
+  font-size: 15px;
+}
+
+.badge {
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: bold;
+  letter-spacing: 0.04em;
+  background: #1c2330;
+}
+
+.badge.live {
+  background: var(--ok);
+  color: #06120c;
+}
+
+.badge.replay {
+  background: var(--accent);
+  color: #120a1f;
+}
+
+.badge.ok {
+  color: var(--ok);
+}
+
+.badge.off {
+  color: var(--bad);
+}
+
+label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+}
+
+input[type="range"] {
+  width: 110px;
+  accent-color: var(--accent);
+}
+
+button {
+  background: #1c2330;
+  color: var(--fg);
+  border: 1px solid #2a3343;
+  border-radius: 4px;
+  padding: 3px 10px;
+  font: inherit;
+  cursor: pointer;
+}
+
+button:hover {
+  border-color: var(--accent);
+}
+
+#perf {
+  margin-left: auto;
+  color: var(--muted);
+}
+
+#chart {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+#chart canvas {
+  position: absolute;
+  left: 0;
+  top: 0;
+}
+
+#gl {
+  /* Bei Render-Skala < 1 Zellen pixelgenau hochskalieren statt weichzeichnen */
+  image-rendering: pixelated;
+}
+
+#chart {
+  cursor: crosshair;
+  touch-action: none;
+}
+
+/* Fadenkreuz und Tooltip als DOM: Mausbewegung verschiebt nur Elemente, ohne den
+   Plot neu zu zeichnen */
+.cross {
+  position: absolute;
+  left: 0;
+  top: 0;
+  pointer-events: none;
+  display: none;
+  border: 0 dashed rgba(220, 228, 240, 0.5);
+  will-change: transform;
+}
+
+#crossV {
+  width: 0;
+  border-left-width: 1px;
+}
+
+#crossH {
+  height: 0;
+  border-top-width: 1px;
+}
+
+#tooltip {
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: none;
+  pointer-events: none;
+  padding: 5px 8px;
+  background: rgba(15, 19, 26, 0.92);
+  border: 1px solid rgba(154, 164, 178, 0.4);
+  color: #e6edf3;
+  font-size: 12px;
+  line-height: 16px;
+  white-space: pre;
+  will-change: transform;
+}
+
+#help {
+  padding: 3px 12px;
+  color: var(--muted);
+  font-size: 11px;
+  background: var(--panel);
+  border-top: 1px solid #1c2330;
 }

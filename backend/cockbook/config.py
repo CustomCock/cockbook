@@ -74,13 +74,19 @@ type ExchangeConfig = BinanceUsdmConfig
 
 
 class AggregationConfig(_Model):
-    interval_ms: Annotated[int, Field(gt=0)] = 100
-    bucket_ticks: Annotated[int, Field(gt=0)] = 1
+    interval_ms: Annotated[int, Field(ge=10)] = 100  # eine Heatmap-Spalte
+    bucket_ticks: Annotated[int, Field(gt=0)] = 1  # Preis-Bucket = n Ticks
+    # Buckets je Seite um den Mid, die pro Spalte gesendet werden
+    half_range_buckets: Annotated[int, Field(gt=0, le=1000)] = 400
 
 
 class ServerConfig(_Model):
     host: str = "127.0.0.1"
     port: Annotated[int, Field(gt=0, lt=65536)] = 8765
+    # So viele Spalten bekommt ein neu verbundener Client als Historie (100 ms -> 5 min)
+    history_columns: Annotated[int, Field(ge=0)] = 3000
+    # Sendepuffer je Client; ein langsamer Client verliert die ältesten Frames
+    client_queue_frames: Annotated[int, Field(gt=0)] = 2000
 
     @field_validator("host")
     @classmethod
@@ -89,6 +95,16 @@ class ServerConfig(_Model):
         if v != "localhost" and not ipaddress.ip_address(v).is_loopback:
             raise ValueError("server.host muss eine Loopback-Adresse sein (z. B. 127.0.0.1)")
         return v
+
+
+class UiConfig(_Model):
+    """Wird beim Verbinden an das Frontend geschickt."""
+
+    # Auto-Recentering, sobald der Mid näher als dieser Anteil der Höhe am Rand ist
+    recenter_margin: Annotated[float, Field(ge=0, lt=0.5)] = 0.15
+    # Bubble-Radius in px für 1 Einheit Basis-Währung (Fläche ~ Volumen)
+    bubble_px_per_unit: Annotated[float, Field(gt=0)] = 6.0
+    bubble_max_px: Annotated[float, Field(gt=0)] = 40.0
 
 
 class RecorderConfig(_Model):
@@ -102,6 +118,7 @@ class AppConfig(_Model):
     exchanges: list[ExchangeConfig] = Field(default_factory=list)
     aggregation: AggregationConfig = Field(default_factory=AggregationConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
+    ui: UiConfig = Field(default_factory=UiConfig)
     recorder: RecorderConfig = Field(default_factory=RecorderConfig)
 
 

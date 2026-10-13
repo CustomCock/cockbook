@@ -31,12 +31,20 @@ exchanges:
       stable_after_s: 60
 
 aggregation:
-  interval_ms: 100   # Breite einer Heatmap-Spalte
-  bucket_ticks: 1    # Preis-Bucket als Vielfaches der Tick-Größe
+  interval_ms: 100        # Breite einer Heatmap-Spalte
+  bucket_ticks: 5         # Preis-Bucket als Vielfaches der Tick-Größe (BTCUSDT: 5 x 0.10 = 0.50)
+  half_range_buckets: 400 # Buckets je Seite um den Mid (5 x 0.10 x 400 = +-200 USDT)
 
 server:
-  host: 127.0.0.1    # nur Loopback erlaubt
+  host: 127.0.0.1         # nur Loopback erlaubt
   port: 8765
+  history_columns: 3000   # Historie für neu verbundene Clients (3000 x 100 ms = 5 min)
+  client_queue_frames: 2000
+
+ui:
+  recenter_margin: 0.15   # Auto-Recentering, wenn der Mid in die äußeren 15 % läuft
+  bubble_px_per_unit: 6   # Bubble-Radius: sqrt(Volumen) * Faktor
+  bubble_max_px: 40
 
 recorder:
   data_dir: data/sim # getrennt von echten Aufzeichnungen (gitignored)

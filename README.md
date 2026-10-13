@@ -1,7 +1,7 @@
 # CockBook
 
-> **Status: Work in Progress** – Phase 1: Binance-USDⓈ-M-Adapter, lokales Orderbuch, Recorder,
-> Terminal-Ansicht. Noch keine Heatmap.
+> **Status: Work in Progress** – Phase 2: Liquidity-Heatmap mit Trades (WebGL) für ein Symbol
+> (Binance USDⓈ-M). DOM, CVD, Alerts, Replay usw. folgen.
 
 Freies, lokal laufendes Orderflow- & Liquidity-Heatmap-Tool für Krypto-Märkte, inspiriert von Bookmap.
 Es nutzt ausschließlich öffentliche, kostenlose Börsen-Datenfeeds und läuft unter Ubuntu und Windows.
@@ -35,7 +35,24 @@ make lint      # ruff, mypy, tsc
 make dev       # Backend + Frontend-Dev-Server (http://127.0.0.1:5173)
 ```
 
-### Phase 1: Orderbuch & Aufzeichnung
+### Heatmap
+
+```bash
+make dev                         # Backend (ws://127.0.0.1:8765) + Frontend -> http://127.0.0.1:5173
+make sim                         # optional, zweites Terminal: Simulator statt Binance ...
+make dev CONFIG=config.sim.yaml  # ... dann so starten
+```
+
+Bedienung: Mausrad = Preis-Zoom, Shift+Mausrad (oder Mausrad über der Zeitachse) = Zeit-Zoom,
+Ziehen = verschieben (auch zurück in der Zeit), Doppelklick oder `C` = zurück zu Live mit
+Auto-Zentrierung. Regler „Kontrast“ und „Schwelle“ steuern die Farbskala; Einstellungen werden
+im Browser gespeichert.
+
+Ohne GPU (z. B. in einer VM) rendert der Browser per Software. CockBook erkennt das und
+zeichnet die Heatmap dann intern mit halber Auflösung (Anzeige oben rechts: „Software-GL“).
+Override per URL: `?scale=1`.
+
+### Orderbuch & Aufzeichnung
 
 ```bash
 make book      # Top-10 Bid/Ask live im Terminal (python -m cockbook.debug_book)
