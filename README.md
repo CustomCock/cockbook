@@ -38,9 +38,7 @@ make dev       # Backend + Frontend-Dev-Server (http://127.0.0.1:5173)
 ### Heatmap
 
 ```bash
-make dev                         # Backend (ws://127.0.0.1:8765) + Frontend -> http://127.0.0.1:5173
-make sim                         # optional, zweites Terminal: Simulator statt Binance ...
-make dev CONFIG=config.sim.yaml  # ... dann so starten
+make dev       # Binance-Livedaten -> Backend (ws://127.0.0.1:8765) + Frontend http://127.0.0.1:5173
 ```
 
 Bedienung: Mausrad = Preis-Zoom, Shift+Mausrad (oder Mausrad über der Zeitachse) = Zeit-Zoom,
@@ -57,11 +55,7 @@ Override per URL: `?scale=1`.
 ```bash
 make book      # Top-10 Bid/Ask live im Terminal (python -m cockbook.debug_book)
 make record    # nur aufzeichnen -> data/<exchange>/<symbol>/YYYY-MM-DDTHH.jsonl.zst
-make sim       # lokaler Binance-Simulator (Port 9876), z. B. ohne Internet/Börsenzugang
 ```
-
-Simulator nutzen: in einem Terminal `make sim`, in einem zweiten `make book CONFIG=config.sim.yaml`.
-Aufzeichnungen aus dem Simulator landen getrennt unter `data/sim/`.
 
 Hinweis: Binance sperrt den Zugriff aus bestimmten Ländern (HTTP 451, „restricted location“).
 CockBook nutzt ausschließlich die offiziellen Endpoints und umgeht solche Sperren nicht.

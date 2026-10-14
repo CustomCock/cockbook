@@ -1,10 +1,11 @@
-"""Binance-USDⓈ-M-Simulator für Offline-Entwicklung und Soak-Tests.
+"""Binance-USDⓈ-M-Simulator – NUR für interne Tests ohne Binance-Zugang.
 
-``python -m cockbook.sim.binance --port 9876`` und in der Config::
+Gedacht für Entwicklungsumgebungen, aus denen Binance nicht erreichbar ist (z. B.
+Cloud-Container mit HTTP 451). Abnahmen und echte Nutzung laufen immer mit
+Binance-Livedaten. Start::
 
-    rest_url: http://127.0.0.1:9876
-    ws_public_url: ws://127.0.0.1:9876/public
-    ws_market_url: ws://127.0.0.1:9876/market
+    python -m cockbook.sim.binance --port 9876
+    python -m cockbook --config backend/cockbook/sim/config.sim.yaml
 
 Simuliert ein *konsistentes* Buch: interne Änderungen bekommen nicht fortlaufende
 Update-IDs (wie bei Binance), werden alle ``interval_ms`` zu einem Diff-Event

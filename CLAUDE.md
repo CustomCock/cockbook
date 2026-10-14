@@ -49,4 +49,5 @@ cockbook/
   - README enthält einen Hinweis: kein offizielles Produkt, nicht mit Bookmap Ltd. verbunden; Bookmap ist eine Marke der Bookmap Ltd.
   - README enthält einen Risiko-Hinweis: keine Anlageberatung, Nutzung auf eigenes Risiko, Live-Trading kann zu Verlusten führen.
   - Lizenz: MIT (LICENSE-Datei im Root).
+- **Echte Daten statt Testdaten für den Nutzer.** Der Nutzer probiert alles immer mit echten Binance-Daten (bzw. echten Börsendaten). Der Simulator (`backend/cockbook/sim/`) und Fake-Server sind nur für Claudes interne Tests (z. B. wenn der Container Binance nicht erreicht) – nie in README, Makefile oder Startanleitungen für den Nutzer anbieten. Abnahmen am Phasenende beschreiben, wie der Nutzer sie mit Live-Daten prüft.
 - Am Ende jeder Phase: Tests laufen lassen, kurz zusammenfassen was gebaut wurde, was bekannt nicht funktioniert und wie man es startet. Dann stoppen und auf die nächste Phase warten.

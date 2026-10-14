@@ -1,4 +1,5 @@
-# CockBook-Konfiguration für den lokalen Simulator (make sim). Schema: backend/cockbook/config.py
+# NUR für interne Tests ohne Binance-Zugang (z. B. Claude-Sessions in Cloud-Containern).
+# Abnahmen laufen immer mit echten Binance-Daten über die config.yaml im Repo-Root.
 # KEINE Secrets hier eintragen – API-Keys nur über Umgebungsvariablen/Keyring.
 
 logging:
