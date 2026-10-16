@@ -54,13 +54,13 @@ float fetch(int k, int r) {
   return texelFetch(uData, ivec2(r, col), 0).r;
 }
 
-float sampleMax(int k0, int nk, int r0, int nr) {
+float sampleMax(int k0, int nk, int r0, int nr, int kStep) {
   float m = 0.0;
   for (int i = 0; i < 4; i++) {
     if (i >= nk) break;
     for (int j = 0; j < 4; j++) {
       if (j >= nr) break;
-      m = max(m, fetch(k0 + i, r0 + j));
+      m = max(m, fetch(k0 + i * kStep, r0 + j));
     }
   }
   return m;
@@ -77,7 +77,9 @@ void main() {
   int nr = clamp(int(ceil(unitsPerPx)), 1, 4);
   float v;
   if (nk > 1 || nr > 1) {
-    v = sampleMax(int(floor(cf)), nk, int(floor(u)), nr);
+    // >4 Spalten pro Pixel: 4 Stichproben gleichmäßig über den Pixel verteilt
+    int kStep = max(1, int(ceil(1.0 / uColW)) / 4);
+    v = sampleMax(int(floor(cf)), nk, int(floor(u)), nr, kStep);
   } else if (uSmooth) {
     // Weich: bilinear zwischen Zellmitten (wirkt, wenn Zeilen groß sind) plus leichte
     // vertikale Glättung über ~±2 Bildschirm-Pixel (wirkt, wenn Zeilen klein sind).
@@ -362,6 +364,101 @@ export class PrimRenderer {
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     const isPoint = mode === PRIM.CIRCLE || mode === PRIM.DIAMOND;
     gl.drawArrays(isPoint ? gl.POINTS : gl.TRIANGLES, 0, vertices);
+    gl.disable(gl.BLEND);
+    gl.bindVertexArray(null);
+  }
+}
+
+// ======================================================================================
+// Abgerundete Rechtecke (Kerzen) per Signed Distance Field
+// ======================================================================================
+
+const RRECT_VS = `#version 300 es
+layout(location = 0) in vec2 aPos;    // CSS-px
+layout(location = 1) in vec2 aLocal;  // Position relativ zur Rechteckmitte (CSS-px)
+layout(location = 2) in vec2 aHalf;   // halbe Größe (CSS-px)
+layout(location = 3) in float aRadius;
+layout(location = 4) in vec4 aColor;
+uniform vec2 uRes;
+out vec2 vLocal;
+out vec2 vHalf;
+out float vRadius;
+out vec4 vColor;
+void main() {
+  gl_Position = vec4(aPos.x / uRes.x * 2.0 - 1.0, 1.0 - aPos.y / uRes.y * 2.0, 0.0, 1.0);
+  vLocal = aLocal;
+  vHalf = aHalf;
+  vRadius = aRadius;
+  vColor = aColor;
+}`;
+
+const RRECT_FS = `#version 300 es
+precision mediump float;
+uniform float uPx;   // Device-px pro CSS-px (für eine 1-Pixel-breite weiche Kante)
+in vec2 vLocal;
+in vec2 vHalf;
+in float vRadius;
+in vec4 vColor;
+out vec4 outColor;
+void main() {
+  // Abstand zur abgerundeten Kontur: < 0 innen, > 0 außen
+  vec2 q = abs(vLocal) - vHalf + vRadius;
+  float d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - vRadius;
+  float aa = 0.75 / uPx;
+  float a = 1.0 - smoothstep(-aa, aa, d);
+  if (a <= 0.0) discard;
+  outColor = vec4(vColor.rgb, vColor.a * a);
+}`;
+
+export class RRectRenderer {
+  private prog: WebGLProgram;
+  private vao: WebGLVertexArrayObject;
+  private buf: WebGLBuffer;
+  private uRes: WebGLUniformLocation | null;
+  private uPx: WebGLUniformLocation | null;
+
+  constructor(private gl: WebGL2RenderingContext) {
+    const prog = gl.createProgram()!;
+    gl.attachShader(prog, compile(gl, gl.VERTEX_SHADER, RRECT_VS));
+    gl.attachShader(prog, compile(gl, gl.FRAGMENT_SHADER, RRECT_FS));
+    gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+      throw new Error(`Link-Fehler: ${gl.getProgramInfoLog(prog)}`);
+    }
+    this.prog = prog;
+    this.uRes = gl.getUniformLocation(prog, "uRes");
+    this.uPx = gl.getUniformLocation(prog, "uPx");
+    this.vao = gl.createVertexArray()!;
+    this.buf = gl.createBuffer()!;
+    gl.bindVertexArray(this.vao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.buf);
+    const stride = 11 * 4;
+    const attrs: [number, number, number][] = [
+      [0, 2, 0],
+      [1, 2, 8],
+      [2, 2, 16],
+      [3, 1, 24],
+      [4, 4, 28],
+    ];
+    for (const [loc, size, off] of attrs) {
+      gl.enableVertexAttribArray(loc);
+      gl.vertexAttribPointer(loc, size, gl.FLOAT, false, stride, off);
+    }
+    gl.bindVertexArray(null);
+  }
+
+  draw(data: Float32Array, vertices: number, cssW: number, cssH: number, px: number): void {
+    if (vertices === 0) return;
+    const gl = this.gl;
+    gl.useProgram(this.prog);
+    gl.bindVertexArray(this.vao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.buf);
+    gl.bufferData(gl.ARRAY_BUFFER, data.subarray(0, vertices * 11), gl.STREAM_DRAW);
+    gl.uniform2f(this.uRes, cssW, cssH);
+    gl.uniform1f(this.uPx, px);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    gl.drawArrays(gl.TRIANGLES, 0, vertices);
     gl.disable(gl.BLEND);
     gl.bindVertexArray(null);
   }

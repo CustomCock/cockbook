@@ -34,6 +34,8 @@ class _Channel:
         self.symbol = symbol
         self.hello: str | None = None
         self.status: str | None = None
+        # Zustand, den jeder neue Abonnent einmal bekommt (z. B. 1m-Kerzen-Historie)
+        self.static: dict[str, bytes] = {}
         # eine Gruppe = alle Frames eines Intervalls
         self.history: deque[list[bytes]] = deque(maxlen=max(history, 1))
 
@@ -76,7 +78,8 @@ class Bridge:
         self._channels: dict[str, _Channel] = {}
         self._symbol_info: dict[str, dict[str, str]] = {}
         self._latest_stats: dict[tuple[str, str], bytes] = {}
-        self._recent_liqs: deque[bytes] = deque(maxlen=100)
+        # Gesamtmarkt: bei Last mehrere pro Sekunde -> etwas mehr vorhalten
+        self._recent_liqs: deque[bytes] = deque(maxlen=300)
         self._runner: web.AppRunner | None = None
 
     @property
@@ -125,6 +128,15 @@ class Bridge:
         for f in frames:
             self._send_channel(symbol, f)
 
+    def set_static(self, symbol: str, key: str, frame: bytes) -> None:
+        """Ersetzt einen Zustand des Symbols und schickt ihn an aktuelle Abonnenten."""
+        self._channel(symbol).static[key] = frame
+        self._send_channel(symbol, frame)
+
+    def send_live(self, symbol: str, frame: bytes) -> None:
+        """Nur an aktuelle Abonnenten, ohne Historie (z. B. laufende Kerze)."""
+        self._send_channel(symbol, frame)
+
     def publish_stat(self, symbol: str, kind: str, frame: bytes) -> None:
         if kind == "liq":
             self._recent_liqs.append(frame)
@@ -157,6 +169,8 @@ class Bridge:
             client.put(ch.hello)
         if ch.status:
             client.put(ch.status)
+        for frame in ch.static.values():
+            client.put(frame)
         for group in ch.history:
             for f in group:
                 client.put(f)

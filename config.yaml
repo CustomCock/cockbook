@@ -21,7 +21,10 @@ exchanges:
     depth_update_ms: 100          # 100 | 250 | 500
     snapshot_limit: 1000          # Gewicht 20 von 2400/min
     max_buffered_updates: 10000
-    coverage_refresh_fraction: 0.5  # neuer Snapshot, wenn der Mid die innere Hälfte verlässt
+    coverage_refresh_fraction: 0.5  # Refresh, wenn der Mid die innere Hälfte des Snapshots verlässt
+    coverage_refresh_min_interval_s: 5  # Refresh wird eingearbeitet, ohne das Buch zu verwerfen
+    liquidations_all_market: true   # Liquidationen aller Coins (sekündlich) statt nur der eigenen
+    candles_1m_history: 1500        # 1m-Kerzen beim Start (max. 1500 = 25 h)
     validation:
       enabled: true
       interval_s: 300             # Abgleich lokales Buch vs. REST-Snapshot alle 5 min
@@ -56,6 +59,12 @@ ui:
   bubble_px_per_sqrt_kusd: 1.2  # Bubble-Radius = sqrt(Gegenwert/1000 USDT) * Faktor
                                 # (100k USDT -> 12 px, 1 Mio. -> 38 px)
   bubble_max_px: 40
+
+history:                  # Tageskerzen (Spot) für ATH, Zyklen, Jahresperformance
+  enabled: true
+  spot_rest_url: https://data-api.binance.vision   # offizieller Binance-Host nur für Marktdaten
+  start: "2017-01-01"     # Binance-Spot beginnt im August 2017
+  refresh_s: 3600         # Cache in data/history/, danach nur das Ende aktualisieren
 
 recorder:
   data_dir: data     # gitignored

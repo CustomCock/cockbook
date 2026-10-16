@@ -17,8 +17,8 @@ export interface Instrument {
 export const AXIS_W = 84;
 export const AXIS_H = 24;
 
-const BG = "#2a2e35";
-const TEXT = "#aab2bd";
+const BG = "#222326";
+const TEXT = "#a9adb3";
 const BID = "#55e5a8";
 const ASK = "#ff7385";
 
@@ -38,9 +38,17 @@ export function gridStepTicks(view: View, ph: number, inst: Instrument): number 
   return niceStep(unitsPerPx * 60 * inst.bucketTicks * inst.tickSize) / inst.tickSize;
 }
 
-export function timeLabel(ms: number, withMs: boolean): string {
+/** Übliche Zeit-Schritte in Sekunden (statt 1-2-5-Folge, die krumme Uhrzeiten ergäbe). */
+const TIME_STEPS = [0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400];
+
+export function niceTimeStep(rawSec: number): number {
+  return TIME_STEPS.find((s) => s >= rawSec) ?? 86400;
+}
+
+export function timeLabel(ms: number, withMs: boolean, withSec = true): string {
   const d = new Date(ms);
   const p2 = (n: number) => String(n).padStart(2, "0");
+  if (!withSec) return `${p2(d.getHours())}:${p2(d.getMinutes())}`;
   const base = `${p2(d.getHours())}:${p2(d.getMinutes())}:${p2(d.getSeconds())}`;
   return withMs ? `${base}.${String(d.getMilliseconds()).padStart(3, "0")}` : base;
 }
@@ -111,12 +119,15 @@ export function drawTimeAxis(
   ctx.fillStyle = TEXT;
   ctx.textBaseline = "top";
   const pxPerSec = (view.colWidth * 1000) / intervalMs;
-  const stepSec = niceStep(110 / pxPerSec);
+  const stepSec = niceTimeStep(110 / pxPerSec);
   const newestTs = store.ts[store.indexAgo(view.offset)]!;
   const first = Math.floor(newestTs / 1000 / stepSec) * stepSec * 1000;
   for (let ts = first; ; ts -= stepSec * 1000) {
     const x = colToX(view.offset + (newestTs - ts) / intervalMs, view, pw);
     if (x < 30) break;
-    if (x < pw - 30) ctx.fillText(timeLabel(ts, stepSec < 1), x - 26, 6);
+    if (x < pw - 30) {
+      const label = timeLabel(ts, stepSec < 1, stepSec < 60);
+      ctx.fillText(label, x - ctx.measureText(label).width / 2, 6);
+    }
   }
 }

@@ -83,6 +83,9 @@ from cockbook.core.events import (
     BookDelta,
     BookSnapshot,
     BookSyncStatus,
+    Candle,
+    CandleBar,
+    CandleHistory,
     Event,
     InstrumentInfo,
     Liquidation,
@@ -185,6 +188,7 @@ def parse_force_order(d: dict[str, Any], inst: Instrument, recv_ns: int) -> Liqu
         ts_exchange_ns=int(o["T"]) * _MS,
         ts_recv_ns=recv_ns,
         price_ticks=inst.price_to_ticks_rounded(price),
+        price=Decimal(price),
         qty=filled if filled > 0 else Decimal(o["q"]),
         # Seite der Liquidations-Order: SELL = Long wird zwangsverkauft
         side=Side.ASK if o["S"] == "SELL" else Side.BID,
@@ -267,6 +271,53 @@ def parse_taker_volume(
         sell_volume=Decimal(d["sellVol"]),
         ratio=Decimal(d["buySellRatio"]),
     )
+
+
+def parse_kline_row(row: list[Any]) -> CandleBar:
+    """REST-Kline: [open time, open, high, low, close, volume, close time, …]."""
+    return CandleBar(
+        open_time_ns=int(row[0]) * _MS,
+        open=Decimal(row[1]),
+        high=Decimal(row[2]),
+        low=Decimal(row[3]),
+        close=Decimal(row[4]),
+        volume=Decimal(row[5]),
+    )
+
+
+def parse_kline_ws(d: dict[str, Any], symbol: str, recv_ns: int) -> Candle:
+    k = d["k"]
+    return Candle(
+        exchange=EXCHANGE,
+        symbol=symbol,
+        ts_exchange_ns=_ms(d.get("E")),
+        ts_recv_ns=recv_ns,
+        interval=k["i"],
+        bar=CandleBar(
+            open_time_ns=int(k["t"]) * _MS,
+            open=Decimal(k["o"]),
+            high=Decimal(k["h"]),
+            low=Decimal(k["l"]),
+            close=Decimal(k["c"]),
+            volume=Decimal(k["v"]),
+        ),
+        closed=bool(k["x"]),
+    )
+
+
+def parse_instruments(exchange_info: dict[str, Any]) -> dict[str, Instrument]:
+    """Alle Symbole der exchangeInfo (für den Liquidations-Stream des Gesamtmarkts)."""
+    out: dict[str, Instrument] = {}
+    for s in exchange_info["symbols"]:
+        filters = {f["filterType"]: f for f in s.get("filters", [])}
+        if "PRICE_FILTER" in filters and "LOT_SIZE" in filters:
+            out[s["symbol"]] = Instrument(
+                exchange=EXCHANGE,
+                symbol=s["symbol"],
+                tick_size=Decimal(filters["PRICE_FILTER"]["tickSize"]),
+                step_size=Decimal(filters["LOT_SIZE"]["stepSize"]),
+            )
+    return out
 
 
 def parse_instrument(exchange_info: dict[str, Any], symbol: str) -> Instrument:
@@ -370,6 +421,8 @@ class BinanceDepthSync:
         self._mid_bounds: tuple[float, float] | None = None
         self._coverage: tuple[int, int] | None = None
         self._pending_validation: DepthSnapshot | None = None
+        self._refresh_wanted = False
+        self._pending_refresh: DepthSnapshot | None = None
 
     # --- Zustand ------------------------------------------------------------------------
 
@@ -381,6 +434,12 @@ class BinanceDepthSync:
     def wants_snapshot(self) -> bool:
         """Doku Schritt 1->2: erst puffern, dann Snapshot holen."""
         return not self._synced and bool(self._buffer)
+
+    @property
+    def wants_refresh(self) -> bool:
+        """Mid nähert sich dem Rand des Snapshot-Bereichs -> frischen Snapshot holen,
+        ohne das Buch zu verwerfen (siehe ``on_refresh_snapshot``)."""
+        return self._synced and self._refresh_wanted and self._pending_refresh is None
 
     @property
     def last_update_id(self) -> int:
@@ -402,6 +461,8 @@ class BinanceDepthSync:
         self._buffer.clear()
         self._history.clear()
         self._pending_validation = None
+        self._refresh_wanted = False
+        self._pending_refresh = None
         self._mid_bounds = None
         self._coverage = None
         self.book.clear()
@@ -518,15 +579,17 @@ class BinanceDepthSync:
         if self.book.is_crossed():
             self.stats.crossed += 1
             events.append(self.reset(f"crossed book after u={upd.final_id}", upd.recv_ns))
-        elif self._left_coverage():
+            return events
+        if self._left_coverage() and not self._refresh_wanted and self._pending_refresh is None:
             self.stats.coverage_refreshes += 1
-            events.append(
-                self.reset(
-                    "mid left snapshot coverage, refreshing", upd.recv_ns, level=logging.INFO
-                )
+            self._refresh_wanted = True
+            log.info(
+                "mid near snapshot edge, requesting refresh", extra={"symbol": self.inst.symbol}
             )
-        elif self._pending_validation is not None:
+        if self._pending_validation is not None:
             events.extend(self._try_validate(upd.recv_ns))
+        if self._synced and self._pending_refresh is not None:
+            events.extend(self._try_refresh(upd.recv_ns))
         return events
 
     # --- Coverage -----------------------------------------------------------------------
@@ -555,6 +618,105 @@ class BinanceDepthSync:
             return False
         mid = (bb.price_ticks + ba.price_ticks) / 2
         return not (self._mid_bounds[0] <= mid <= self._mid_bounds[1])
+
+    def _set_coverage(self, snap: DepthSnapshot) -> None:
+        """Coverage = Preisbereich des Snapshots; Refresh-Grenzen um den *aktuellen* Mid."""
+        if not snap.bids or not snap.asks:
+            return
+        lo = min(lvl.price_ticks for lvl in snap.bids)
+        hi = max(lvl.price_ticks for lvl in snap.asks)
+        bb, ba = self.book.best_bid(), self.book.best_ask()
+        if bb is None or ba is None:
+            return
+        mid = (bb.price_ticks + ba.price_ticks) / 2
+        f = self._coverage_fraction
+        self._coverage = (lo, hi)
+        self._mid_bounds = (mid - f * (mid - lo), mid + f * (hi - mid))
+
+    def _touched_since(self, lid: int) -> tuple[set[int], set[int]] | None:
+        """Preise, die ein Delta mit ``u > lid`` geändert hat (Bids, Asks).
+
+        ``None``, wenn die Delta-Historie nicht bis ``lid`` zurückreicht – dann lässt sich
+        nicht sagen, welche Level seit ``lid`` unverändert sind.
+        """
+        touched_b: set[int] = set()
+        touched_a: set[int] = set()
+        covered = self._last_id == lid
+        for h in reversed(self._history):
+            if h.final_id <= lid:
+                covered = True
+                break
+            touched_b |= h.bid_prices
+            touched_a |= h.ask_prices
+        else:
+            covered = covered or (bool(self._history) and self._history[0].prev_id <= lid)
+        return (touched_b, touched_a) if covered else None
+
+    # --- Heißer Refresh -----------------------------------------------------------------
+    # Statt das Buch beim Verlassen des Snapshot-Bereichs zu verwerfen (= Lücke in der
+    # Heatmap), wird ein frischer Snapshot *eingearbeitet*: Für jeden Preis im Bereich des
+    # neuen Snapshots, den seit dessen Update-ID L kein Delta berührt hat, ist der
+    # Snapshot-Wert exakt der aktuelle Wert (gleiche Begründung wie bei der Validierung).
+    # Berührte Preise sind lokal ohnehin schon aktuell. Das Buch bleibt durchgehend gültig.
+
+    def on_refresh_snapshot(self, snap: DepthSnapshot) -> list[Event]:
+        self._refresh_wanted = False
+        if not self._synced:
+            return []
+        self._pending_refresh = snap
+        return self._try_refresh(snap.recv_ns)
+
+    def _try_refresh(self, ts_ns: int) -> list[Event]:
+        snap = self._pending_refresh
+        if snap is None or self._awaiting_first or self._last_id < snap.last_update_id:
+            return []  # lokales Buch hat L noch nicht erreicht -> später erneut
+        self._pending_refresh = None
+        lid = snap.last_update_id
+        touched = self._touched_since(lid) if lid >= self._snapshot_id else None
+        if touched is None:
+            # Ohne ausreichende Historie ist Einarbeiten nicht sicher -> klassischer Neu-Sync
+            return [self.reset("coverage refresh not possible, resync", ts_ns, level=logging.INFO)]
+        changes: dict[Side, list[PriceLevel]] = {Side.BID: [], Side.ASK: []}
+        for side, remote_levels, t in (
+            (Side.BID, snap.bids, touched[0]),
+            (Side.ASK, snap.asks, touched[1]),
+        ):
+            if not remote_levels:
+                continue
+            remote = {lvl.price_ticks: lvl.qty for lvl in remote_levels}
+            lo = min(remote) if side is Side.BID else None
+            hi = max(remote) if side is Side.ASK else None
+            local = self.book.side(side)
+            prices = set(remote) | {
+                p for p in local if (lo is None or p >= lo) and (hi is None or p <= hi)
+            }
+            for p in prices - t:
+                want = remote.get(p, Decimal(0))
+                if local.get(p, Decimal(0)) != want:
+                    changes[side].append(PriceLevel(p, want))
+        bids, asks = tuple(changes[Side.BID]), tuple(changes[Side.ASK])
+        self.book.apply(bids, asks)
+        self._set_coverage(snap)
+        log.info(
+            "coverage refreshed without resync",
+            extra={"symbol": self.inst.symbol, "levels_changed": len(bids) + len(asks)},
+        )
+        if not bids and not asks:
+            return []
+        # Synthetisches Delta, damit Downstream-Bücher dieselben Änderungen bekommen
+        return [
+            BookDelta(
+                exchange=EXCHANGE,
+                symbol=self.inst.symbol,
+                ts_exchange_ns=None,
+                ts_recv_ns=ts_ns,
+                bids=bids,
+                asks=asks,
+                first_seq=self._last_id,
+                last_seq=self._last_id,
+                prev_last_seq=self._last_id,
+            )
+        ]
 
     # --- Validierung --------------------------------------------------------------------
 
@@ -585,28 +747,19 @@ class BinanceDepthSync:
             self.stats.validations_skipped += 1
             return []
 
-        touched_b: set[int] = set()
-        touched_a: set[int] = set()
-        covered = self._last_id == lid
-        for h in reversed(self._history):
-            if h.final_id <= lid:
-                covered = True
-                break
-            touched_b |= h.bid_prices
-            touched_a |= h.ask_prices
-        else:
-            covered = covered or (bool(self._history) and self._history[0].prev_id <= lid)
-        if not covered:
+        touched = self._touched_since(lid)
+        if touched is None:
             self.stats.validations_skipped += 1
             log.info(
                 "book validation skipped: delta history too short",
                 extra={"symbol": self.inst.symbol, "snapshot_id": lid},
             )
             return []
+        touched_b, touched_a = touched
 
         result = ValidationResult(lid, self._last_id, 0, len(touched_b) + len(touched_a))
         cov_lo, cov_hi = self._coverage or (None, None)
-        for side, remote_levels, touched in (
+        for side, remote_levels, side_touched in (
             (Side.BID, snap.bids, touched_b),
             (Side.ASK, snap.asks, touched_a),
         ):
@@ -624,7 +777,7 @@ class BinanceDepthSync:
             local_side = self.book.side(side)
             prices = {p for p in remote if (lo is None or p >= lo) and (hi is None or p <= hi)}
             prices |= {p for p in local_side if (lo is None or p >= lo) and (hi is None or p <= hi)}
-            for p in prices - touched:
+            for p in prices - side_touched:
                 result.compared += 1
                 local_q = local_side.get(p, Decimal(0))
                 remote_q = remote.get(p, Decimal(0))
@@ -679,6 +832,8 @@ class BinanceUsdmAdapter:
         self.sync: BinanceDepthSync | None = None
         self._stop = asyncio.Event()
         self._need_snapshot = asyncio.Event()
+        self._last_refresh = 0.0
+        self._bg_tasks: set[asyncio.Task[None]] = set()
         # Serialisiert "Zustand ändern + Events publizieren". Ohne Lock könnte der
         # Snapshot-Task beim await auf publish() unterbrochen werden, der Stream-Task
         # ein neueres Delta *vor* den gepufferten Deltas publizieren -> Downstream-
@@ -732,6 +887,14 @@ class BinanceUsdmAdapter:
             )
             depth = depth_stream_name(self.symbol, self.cfg.depth_update_ms)
             sym = self.symbol.lower()
+            market_streams = [
+                f"{sym}@aggTrade",
+                f"{sym}@markPrice@1s",
+                f"{sym}@miniTicker",
+                f"{sym}@kline_1m",
+            ]
+            if not self.cfg.liquidations_all_market:
+                market_streams.append(f"{sym}@forceOrder")
             log.info("adapter starting", extra={"symbol": self.symbol, "tick": str(inst.tick_size)})
             async with asyncio.TaskGroup() as tg:
                 tg.create_task(
@@ -749,13 +912,12 @@ class BinanceUsdmAdapter:
                 tg.create_task(
                     run_ws(
                         session,
-                        f"{self.cfg.ws_market_url}/stream?streams="
-                        f"{sym}@aggTrade/{sym}@forceOrder/{sym}@markPrice@1s/{sym}@miniTicker",
+                        f"{self.cfg.ws_market_url}/stream?streams={'/'.join(market_streams)}",
                         name=f"{self.name}:market",
                         cfg=self.cfg.reconnect,
                         stop=self._stop,
                         on_message=self._on_market,
-                        on_open=lambda: self._on_meta("connect", "market"),
+                        on_open=lambda: self._on_market_open(session),
                         on_close=lambda r: self._on_meta("disconnect", "market", r),
                     )
                 )
@@ -817,14 +979,14 @@ class BinanceUsdmAdapter:
             await self.bus.publish(self._raw("depth", text, recv_ns))
             events = self.sync.on_depth(parse_depth_update(data, self.inst, recv_ns))
             await self._publish(events)
-            if self.sync.wants_snapshot:
+            if self.sync.wants_snapshot or self.sync.wants_refresh:
                 self._need_snapshot.set()
 
     async def _snapshot_worker(self, session: aiohttp.ClientSession) -> None:
         assert self.sync is not None
         assert self.inst is not None
         url = f"{self.cfg.rest_url}/fapi/v1/depth"
-        params = {"symbol": self.symbol, "limit": self.cfg.snapshot_limit}
+        params: dict[str, str | int] = {"symbol": self.symbol, "limit": self.cfg.snapshot_limit}
         stale_delay = 0.25
         while not self._stop.is_set():
             waiter = asyncio.ensure_future(self._need_snapshot.wait())
@@ -836,6 +998,8 @@ class BinanceUsdmAdapter:
                 return
             self._need_snapshot.clear()
             if self.sync.synced:
+                if self.sync.wants_refresh:
+                    await self._refresh(session, url, params)
                 continue
             try:
                 data, text = await get_json(session, url, params)
@@ -862,6 +1026,30 @@ class BinanceUsdmAdapter:
                 if await sleep_or_stop(self._stop, stale_delay):
                     return
                 stale_delay = min(stale_delay * 2, 5.0)
+                self._need_snapshot.set()
+
+    async def _refresh(
+        self, session: aiohttp.ClientSession, url: str, params: dict[str, str | int]
+    ) -> None:
+        """Heißer Coverage-Refresh (siehe ``BinanceDepthSync.on_refresh_snapshot``)."""
+        assert self.sync is not None
+        assert self.inst is not None
+        wait = self._last_refresh + self.cfg.coverage_refresh_min_interval_s - time.monotonic()
+        if wait > 0 and await sleep_or_stop(self._stop, wait):
+            return
+        self._last_refresh = time.monotonic()
+        try:
+            data, text = await get_json(session, url, params)
+        except RestError as e:
+            log.warning("refresh snapshot failed", extra={"symbol": self.symbol, "error": str(e)})
+            self._need_snapshot.set()
+            return
+        recv_ns = time.time_ns()
+        async with self._lock:
+            await self.bus.publish(self._raw("rest:depth:refresh", text, recv_ns))
+            events = self.sync.on_refresh_snapshot(parse_depth_snapshot(data, self.inst, recv_ns))
+            await self._publish(events)
+            if self.sync.wants_snapshot or self.sync.wants_refresh:
                 self._need_snapshot.set()
 
     async def _validation_worker(self, session: aiohttp.ClientSession) -> None:
@@ -905,11 +1093,45 @@ class BinanceUsdmAdapter:
         elif etype == "24hrMiniTicker":
             ev = parse_mini_ticker(data, self.symbol, recv_ns)
             kind = "miniTicker"
+        elif etype == "kline":
+            ev = parse_kline_ws(data, self.symbol, recv_ns)
+            kind = "kline"
         else:
             return
         async with self._lock:
             await self.bus.publish(self._raw(kind, text, recv_ns))
             await self.bus.publish(ev)
+
+    async def _on_market_open(self, session: aiohttp.ClientSession) -> None:
+        await self._on_meta("connect", "market")
+        # 1m-Historie bei jedem (Re)Connect neu laden: schließt Lücken während der
+        # Trennung. Im Hintergrund, damit der Empfang nicht wartet.
+        task = asyncio.create_task(self._load_candles(session))
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
+
+    async def _load_candles(self, session: aiohttp.ClientSession) -> None:
+        url = f"{self.cfg.rest_url}/fapi/v1/klines"
+        params: dict[str, str | int] = {
+            "symbol": self.symbol,
+            "interval": "1m",
+            "limit": self.cfg.candles_1m_history,
+        }
+        try:
+            rows, text = await get_json(session, url, params, attempts=3)
+        except RestError as e:
+            log.warning("candle history failed", extra={"symbol": self.symbol, "error": str(e)})
+            return
+        now = time.time_ns()
+        ev = CandleHistory(
+            exchange=EXCHANGE,
+            symbol=self.symbol,
+            ts_recv_ns=now,
+            interval="1m",
+            source="futures",
+            bars=tuple(parse_kline_row(r) for r in rows),
+        )
+        await self._publish_rest("rest:klines:1m", text, ev, now)
 
     # --- Kennzahlen per REST ------------------------------------------------------------
 
@@ -959,3 +1181,61 @@ class BinanceUsdmAdapter:
                 )
             if await sleep_or_stop(self._stop, self.cfg.metrics.ratios_interval_s):
                 return
+
+
+class BinanceLiquidationStream:
+    """Liquidationen *aller* USDⓈ-M-Symbole über ``!forceOrder@arr`` (/market).
+
+    Laut Doku pro Symbol höchstens die letzte Liquidation je 1000 ms; der Stream
+    aktualisiert also sekündlich über den ganzen Markt. Seit der "CM-Migration" enthält er
+    auch Coin-margined Kontrakte (``st = 2``, Menge in Kontrakten statt Basis-Währung) –
+    die werden verworfen, sonst wären die USDT-Summen falsch.
+    """
+
+    name = f"{EXCHANGE}:liquidations"
+
+    def __init__(self, cfg: BinanceUsdmConfig, bus: EventBus) -> None:
+        self.cfg = cfg
+        self.bus = bus
+        self.instruments: dict[str, Instrument] = {}
+        self._stop = asyncio.Event()
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    async def run(self) -> None:
+        timeout = aiohttp.ClientTimeout(total=30)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            data, _ = await get_json(session, f"{self.cfg.rest_url}/fapi/v1/exchangeInfo")
+            self.instruments = parse_instruments(data)
+            log.info("liquidation stream starting", extra={"symbols": len(self.instruments)})
+            await run_ws(
+                session,
+                f"{self.cfg.ws_market_url}/stream?streams=!forceOrder@arr",
+                name=self.name,
+                cfg=self.cfg.reconnect,
+                stop=self._stop,
+                on_message=self._on_message,
+            )
+
+    async def _on_message(self, text: str, recv_ns: int) -> None:
+        _, data = unwrap_combined(text)
+        items: list[dict[str, Any]] = data if isinstance(data, list) else [data]
+        events: list[Event] = [
+            RawMessage(
+                exchange=EXCHANGE,
+                symbol="ALL",
+                ts_recv_ns=recv_ns,
+                stream="forceOrder@arr",
+                payload=text,
+            )
+        ]
+        for item in items:
+            if item.get("e") != "forceOrder" or item.get("st", 1) != 1:
+                continue
+            inst = self.instruments.get(item["o"]["s"])
+            if inst is None:  # z. B. neu gelistet seit dem Start
+                continue
+            events.append(parse_force_order(item, inst, recv_ns))
+        for ev in events:
+            await self.bus.publish(ev)

@@ -125,8 +125,8 @@ async def run(cfg: AppConfig, symbol: str | None, levels: int, interval: float) 
     ring = _RingHandler()
     logging.getLogger().handlers[:] = [ring]
     async with EventBus() as bus:
-        sources = build_sources(cfg, bus, only_symbol=symbol)[:1]
-        view = DebugView(sources[0].symbol, levels)
+        sources = build_sources(cfg, bus, only_symbol=symbol, market_wide=False)[:1]
+        view = DebugView(sources[0].name.split(":")[-1], levels)
         bus.subscribe(InstrumentInfo, view.on_info)
         bus.subscribe(BookSnapshot, view.on_book)
         bus.subscribe(BookDelta, view.on_book)

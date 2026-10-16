@@ -58,14 +58,18 @@ Coins werden in `config.yaml` unter `symbols` eingetragen (Standard: BTCUSDT, ET
 XRPUSDT) und links in der Seitenleiste gewählt. Die Seitenleiste enthält außerdem alle Funktionen
 zum Ein-/Ausschalten (gelten für alle Coins):
 
-- **Chart:** Liquidity-Heatmap, Weich zeichnen, Trade-Bubbles, Best Bid/Ask, Liquidationen, Preisgitter
+- **Coins:** Preis, 24h, Veränderung seit 1. Januar, Sync-Status des Orderbuchs (Punkt)
+- **Chart:** Liquidity-Heatmap, Weich zeichnen, Trade-Bubbles, Best Bid/Ask, Liquidationen, Preisgitter,
+  Kerzen (1m/3m/5m/10m)
+- **ATH & Zyklen:** Allzeithoch, Abstand, Tage seit ATH, 52-Wochen-Spanne; Marktzyklus (Halving-Zyklen
+  oder eigener Zeitraum) mit Länge, Fortschritt, Zyklus-Hoch/-Tief und Performance
 - **Derivate:** Mark-/Indexpreis, Funding Rate (mit Countdown), Open Interest (Δ 5 min / 1 h),
-  Longs vs Shorts, Taker Buy/Sell, 24h-Statistik, Liquidationen aller Coins
+  Longs vs Shorts, Taker Buy/Sell, 24h-Statistik, Liquidationen des Gesamtmarkts (sekündlich)
 - **Geplant:** Liquidation Heatmap, Funding-Heatmap, RSI-Heatmap, Depth Delta, Multi-Börsen-Orderbuch …
 
 Bedienung: Mausrad = Preis-Zoom, Shift+Mausrad (oder Mausrad über der Zeitachse) = Zeit-Zoom,
 Ziehen = verschieben (auch zurück in der Zeit), Doppelklick oder `C` = zurück zu Live mit
-Auto-Zentrierung. Regler „Kontrast“ und „Schwelle“ steuern die Farbskala; Einstellungen werden
+Auto-Zentrierung, `F` = Preisbereich an die sichtbaren Kerzen anpassen. Regler „Kontrast“ und „Schwelle“ steuern die Farbskala; Einstellungen werden
 im Browser gespeichert.
 
 Ohne GPU (z. B. in einer VM) rendert der Browser per Software. CockBook erkennt das und

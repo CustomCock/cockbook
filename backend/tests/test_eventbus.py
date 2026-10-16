@@ -25,6 +25,7 @@ def liq(i: int) -> Liquidation:
         symbol="BTCUSDT",
         ts_recv_ns=i,
         price_ticks=1,
+        price=Decimal(1),
         qty=Decimal(1),
         side=Side.ASK,
     )

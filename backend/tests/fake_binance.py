@@ -58,6 +58,7 @@ class FakeBinance:
         self.market_scripts: list[list[ScriptItem]] = []
         self.public_connections = 0
         self.market_connections = 0
+        self.liquidation_script: list[ScriptItem] = []
         self._server: TestServer | None = None
 
     @property
@@ -118,6 +119,8 @@ class FakeBinance:
 
     async def _market(self, request: web.Request) -> web.WebSocketResponse:
         streams = request.query["streams"].split("/")
+        if streams == ["!forceOrder@arr"]:
+            return await self._run_script(request, self.liquidation_script)
         assert "btcusdt@aggTrade" in streams
         assert "btcusdt@forceOrder" in streams
         i = self.market_connections

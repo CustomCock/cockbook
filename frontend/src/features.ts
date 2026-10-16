@@ -6,7 +6,7 @@
  * Einstellungen gelten für alle Coins und werden im Browser gespeichert.
  */
 
-export type FeatureGroup = "chart" | "derivatives" | "planned";
+export type FeatureGroup = "chart" | "history" | "derivatives" | "planned";
 
 export interface Feature {
   id: string;
@@ -31,6 +31,14 @@ export const FEATURES: Feature[] = [
     hint: "Rauten: orange = Long liquidiert, blau = Short liquidiert" },
   { id: "grid", label: "Preisgitter", group: "chart", status: "live", defaultOn: true,
     hint: "Horizontale Hilfslinien" },
+  { id: "candles", label: "Kerzen", group: "chart", status: "live", defaultOn: false,
+    hint: "OHLC-Kerzen über der Heatmap (1m-Basis von Binance; 3m/5m/10m daraus gebaut)" },
+
+  // --- Langfristig: ATH & Zyklen ---------------------------------------------------------
+  { id: "ath", label: "Allzeithoch & Jahr", group: "history", status: "live", defaultOn: true,
+    hint: "ATH, Abstand, Tage seit ATH, 52-Wochen-Spanne, Performance seit 1. Januar (Spot-Tageskerzen)" },
+  { id: "cycles", label: "Marktzyklus", group: "history", status: "live", defaultOn: true,
+    hint: "Halving-Zyklen oder eigener Zeitraum: Länge, Fortschritt, Zyklus-Hoch/-Tief, Performance" },
 
   // --- Derivate-Kennzahlen (Coinank: Funding, OI, Longs vs Shorts, Liquidationen) ------
   { id: "markPrice", label: "Mark- & Indexpreis", group: "derivatives", status: "live", defaultOn: true,
@@ -45,8 +53,8 @@ export const FEATURES: Feature[] = [
     hint: "Aggressives Kauf- vs. Verkaufsvolumen (5-min-Periode)" },
   { id: "ticker24h", label: "24h-Statistik", group: "derivatives", status: "live", defaultOn: true,
     hint: "Hoch, Tief, Volumen der letzten 24 h" },
-  { id: "liqFeed", label: "Liquidationen (alle Coins)", group: "derivatives", status: "live", defaultOn: true,
-    hint: "Letzte Liquidationen + Summe der letzten Stunde. Binance liefert max. 1 pro Sekunde und Coin" },
+  { id: "liqFeed", label: "Liquidationen (Gesamtmarkt)", group: "derivatives", status: "live", defaultOn: true,
+    hint: "Alle USDⓈ-M-Coins, sekündlich: Balken je Sekunde, Summen 1 min / 1 h, Top-Coins, Liste. Binance liefert max. 1 Liquidation pro Sekunde und Coin" },
 
   // --- Coinank-Funktionen, noch nicht gebaut ---------------------------------------------
   { id: "liqHeatmap", label: "Liquidation Heatmap / Map", group: "planned", status: "planned", defaultOn: false,

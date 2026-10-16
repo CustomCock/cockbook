@@ -1,15 +1,25 @@
 /**
- * Seitenleiste links: Coin-Auswahl, Chart-Ebenen, Derivate-Kennzahlen und geplante
- * Funktionen. Die Struktur wird einmal aufgebaut; `update()` setzt nur Texte neu
- * (2x pro Sekunde), egal wie viele Kennzahl-Frames ankommen.
+ * Seitenleiste links: Coin-Auswahl, Chart-Ebenen (inkl. Kerzen), ATH & Zyklen,
+ * Derivate-Kennzahlen, Liquidationen (Gesamtmarkt) und geplante Funktionen.
+ * Die Struktur wird einmal aufgebaut; `update()` setzt nur Inhalte neu (2x pro Sekunde).
  */
 
+import { CANDLE_INTERVALS, type CandleMinutes } from "./candles";
+import { athStats, CYCLE_PRESETS, cycleStats, DAY_MS, parseDate } from "./cycles";
 import { FEATURES, type FeatureState } from "./features";
-import type { Markets } from "./markets";
+import { liqPerSecond, topLiquidated, type Markets } from "./markets";
+
+export interface CycleChoice {
+  id: string; // Preset-ID oder "custom"
+  start: string; // YYYY-MM-DD
+  end: string;
+}
 
 export interface SidebarCallbacks {
   onSelect(symbol: string): void;
   onToggle(id: string, on: boolean): void;
+  onCandleInterval(minutes: CandleMinutes): void;
+  onCycle(choice: CycleChoice): void;
 }
 
 const NBSP = " ";
@@ -52,6 +62,14 @@ function fmtTime(ms: number): string {
   return `${p2(d.getHours())}:${p2(d.getMinutes())}:${p2(d.getSeconds())}`;
 }
 
+function fmtDate(ms: number): string {
+  return new Date(ms).toLocaleDateString("de-DE", { timeZone: "UTC" });
+}
+
+function fmtDays(d: number): string {
+  return `${d.toLocaleString("de-DE")}${NBSP}Tage`;
+}
+
 const base = (sym: string) => sym.replace(/USDT$|USDC$|USD$/, "");
 
 function cls(v: number | null): string {
@@ -74,32 +92,89 @@ function bar(left: number, right: number, leftLabel: string, rightLabel: string)
   return box;
 }
 
+/** Fortschrittsbalken 0..100 % */
+function progress(pct: number): HTMLElement {
+  const wrap = el("div", "progress");
+  const fill = el("div", "progress-fill");
+  fill.style.width = `${Math.max(0, Math.min(100, pct))}%`;
+  wrap.append(fill);
+  return wrap;
+}
+
+interface CoinRow {
+  row: HTMLElement;
+  dot: HTMLElement;
+  px: HTMLElement;
+  chg: HTMLElement;
+  ytd: HTMLElement;
+}
+
 export class Sidebar {
-  private coinRows = new Map<string, { row: HTMLElement; px: HTMLElement; chg: HTMLElement; fr: HTMLElement }>();
+  private coinRows = new Map<string, CoinRow>();
   private coinsBox: HTMLElement;
   private derivTitle: HTMLElement;
+  private histTitle: HTMLElement;
   private values = new Map<string, HTMLElement>();
   private active: string | null = null;
+  private cycleSelect!: HTMLSelectElement;
+  private cycleStart!: HTMLInputElement;
+  private cycleEnd!: HTMLInputElement;
+  private customBox!: HTMLElement;
+  private liqBars: HTMLElement[] = [];
 
   constructor(
     root: HTMLElement,
     private markets: Markets,
     private features: FeatureState,
     private cb: SidebarCallbacks,
+    candleMinutes: CandleMinutes,
+    private cycle: CycleChoice,
   ) {
     root.replaceChildren();
 
+    // Coins
     const coins = el("section");
     coins.append(el("h3", "", "Coins"));
     const head = el("div", "coin coin-head");
-    head.append(el("span", "", "Symbol"), el("span", "", "Preis"), el("span", "", "24h"), el("span", "", "Funding"));
+    const ytdHead = el("span", "", "Jahr");
+    ytdHead.title = "Veränderung seit 1. Januar (UTC)";
+    head.append(el("span", "", "Symbol"), el("span", "", "Preis"), el("span", "", "24h"), ytdHead);
     this.coinsBox = el("div", "coins");
     coins.append(head, this.coinsBox);
 
+    // Chart-Ebenen
     const chart = el("section");
     chart.append(el("h3", "", "Chart"));
-    for (const f of FEATURES.filter((x) => x.group === "chart")) chart.append(this.toggle(f.id, f.label, f.hint));
+    for (const f of FEATURES.filter((x) => x.group === "chart")) {
+      const t = this.toggle(f.id, f.label, f.hint);
+      if (f.id === "candles") {
+        const row = el("div", "toggle-row");
+        row.append(t, this.intervalPicker(candleMinutes));
+        chart.append(row);
+      } else chart.append(t);
+    }
 
+    // ATH & Zyklen
+    const hist = el("section");
+    this.histTitle = el("h3", "", "ATH & Zyklen");
+    hist.append(this.histTitle);
+    for (const f of FEATURES.filter((x) => x.group === "history")) {
+      const item = el("div", "feat");
+      item.append(this.toggle(f.id, f.label, f.hint));
+      const val = el("div", "feat-val");
+      val.hidden = !this.features[f.id];
+      if (f.id === "cycles") {
+        const ctl = this.cycleControls();
+        ctl.hidden = !this.features[f.id];
+        this.values.set("cyclesCtl", ctl);
+        item.append(ctl);
+      }
+      this.values.set(f.id, val);
+      item.append(val);
+      hist.append(item);
+    }
+
+    // Derivate
     const deriv = el("section");
     this.derivTitle = el("h3", "", "Derivate");
     deriv.append(this.derivTitle);
@@ -113,6 +188,7 @@ export class Sidebar {
       deriv.append(item);
     }
 
+    // Geplant
     const planned = el("section", "planned");
     planned.append(el("h3", "", "Geplant (wie Coinank)"));
     for (const f of FEATURES.filter((x) => x.group === "planned")) {
@@ -121,7 +197,7 @@ export class Sidebar {
       planned.append(item);
     }
 
-    root.append(coins, chart, deriv, planned);
+    root.append(coins, chart, hist, deriv, planned);
   }
 
   private toggle(id: string, label: string, hint: string): HTMLElement {
@@ -132,12 +208,75 @@ export class Sidebar {
     box.checked = this.features[id] ?? false;
     box.addEventListener("change", () => {
       this.features[id] = box.checked;
-      const val = this.values.get(id);
-      if (val) val.hidden = !box.checked;
+      for (const key of [id, `${id}Ctl`]) {
+        const v = this.values.get(key);
+        if (v) v.hidden = !box.checked;
+      }
       this.cb.onToggle(id, box.checked);
     });
     lab.append(box, el("span", "", label));
     return lab;
+  }
+
+  private intervalPicker(current: CandleMinutes): HTMLElement {
+    const box = el("div", "seg");
+    const buttons: HTMLButtonElement[] = [];
+    for (const m of CANDLE_INTERVALS) {
+      const b = el("button", m === current ? "on" : "", `${m}m`);
+      b.type = "button";
+      b.addEventListener("click", () => {
+        for (const x of buttons) x.classList.toggle("on", x === b);
+        this.cb.onCandleInterval(m);
+      });
+      buttons.push(b);
+      box.append(b);
+    }
+    return box;
+  }
+
+  private cycleControls(): HTMLElement {
+    const box = el("div", "cycle-ctl");
+    this.cycleSelect = el("select");
+    for (const p of CYCLE_PRESETS) {
+      const o = el("option", "", p.label);
+      o.value = p.id;
+      this.cycleSelect.append(o);
+    }
+    const custom = el("option", "", "Eigener Zeitraum …");
+    custom.value = "custom";
+    this.cycleSelect.append(custom);
+    this.cycleSelect.value = this.cycle.id;
+
+    this.customBox = el("div", "cycle-dates");
+    this.cycleStart = el("input");
+    this.cycleStart.type = "date";
+    this.cycleStart.value = this.cycle.start;
+    this.cycleEnd = el("input");
+    this.cycleEnd.type = "date";
+    this.cycleEnd.value = this.cycle.end;
+    this.customBox.append(el("span", "", "von"), this.cycleStart, el("span", "", "bis"), this.cycleEnd);
+    this.customBox.hidden = this.cycle.id !== "custom";
+
+    const emit = () => {
+      const id = this.cycleSelect.value;
+      const preset = CYCLE_PRESETS.find((p) => p.id === id);
+      if (preset) {
+        this.cycleStart.value = preset.start;
+        this.cycleEnd.value = preset.end;
+      }
+      this.customBox.hidden = id !== "custom";
+      this.cycle = { id, start: this.cycleStart.value, end: this.cycleEnd.value };
+      this.cb.onCycle(this.cycle);
+    };
+    this.cycleSelect.addEventListener("change", emit);
+    for (const i of [this.cycleStart, this.cycleEnd]) {
+      i.addEventListener("change", () => {
+        this.cycleSelect.value = "custom";
+        emit();
+      });
+    }
+    box.append(this.cycleSelect, this.customBox);
+    return box;
   }
 
   setSymbols(symbols: string[]): void {
@@ -148,14 +287,16 @@ export class Sidebar {
     for (const sym of symbols) {
       const row = el("button", "coin");
       row.type = "button";
-      row.title = sym;
+      const dot = el("span", "dot");
+      const name = el("span", "sym");
+      name.append(dot, document.createTextNode(base(sym)));
       const px = el("span", "num");
       const chg = el("span", "num");
-      const fr = el("span", "num");
-      row.append(el("span", "sym", base(sym)), px, chg, fr);
+      const ytd = el("span", "num");
+      row.append(name, px, chg, ytd);
       row.addEventListener("click", () => this.cb.onSelect(sym));
       this.coinsBox.append(row);
-      this.coinRows.set(sym, { row, px, chg, fr });
+      this.coinRows.set(sym, { row, dot, px, chg, ytd });
     }
     if (this.active) this.setActive(this.active);
   }
@@ -164,6 +305,7 @@ export class Sidebar {
     this.active = symbol;
     for (const [sym, r] of this.coinRows) r.row.classList.toggle("active", sym === symbol);
     this.derivTitle.textContent = `Derivate · ${base(symbol)}`;
+    this.histTitle.textContent = `ATH & Zyklen · ${base(symbol)}`;
   }
 
   update(now: number): void {
@@ -171,16 +313,26 @@ export class Sidebar {
     for (const [sym, r] of this.coinRows) {
       const m = mk.bySymbol.get(sym);
       const price = mk.price(sym);
-      r.px.textContent = price === null ? "–" : price.toLocaleString("de-DE", {
-        minimumFractionDigits: m?.decimals ?? 2,
-        maximumFractionDigits: m?.decimals ?? 2,
-      });
+      r.px.textContent =
+        price === null
+          ? "–"
+          : price.toLocaleString("de-DE", {
+              minimumFractionDigits: m?.decimals ?? 2,
+              maximumFractionDigits: m?.decimals ?? 2,
+            });
       const chg = mk.change24h(sym);
-      r.chg.textContent = fmtPct(chg);
+      r.chg.textContent = fmtPct(chg, 1);
       r.chg.className = `num ${cls(chg)}`;
-      const fr = m?.mark ? m.mark.fr * 100 : null;
-      r.fr.textContent = fmtPct(fr, 4);
-      r.fr.className = `num ${cls(fr)}`;
+      const ath = m?.daily ? athStats(m.daily, price, now) : null;
+      const ytd = ath?.ytdPct ?? null;
+      r.ytd.textContent = fmtPct(ytd, 1);
+      r.ytd.className = `num ${cls(ytd)}`;
+      const sync = m?.sync;
+      r.dot.className = `dot ${!sync ? "" : sync.synced ? "ok" : "bad"}`;
+      r.row.title = sync
+        ? `${sym}: ${sync.synced ? "Orderbuch synchron" : "NICHT synchron"} · Neu-Syncs: ${sync.resyncs}` +
+          (sync.reason ? ` · zuletzt: ${sync.reason}` : "")
+        : sym;
     }
     const sym = this.active;
     if (!sym) return;
@@ -196,7 +348,55 @@ export class Sidebar {
       d.append(el("span", "k", label), el("span", `v ${c}`, value));
       return d;
     };
+    const price = mk.price(sym);
 
+    // --- ATH & Jahr --------------------------------------------------------------------
+    const ath = m?.daily ? athStats(m.daily, price, now) : null;
+    if (ath) {
+      set(
+        "ath",
+        line("Allzeithoch", px(ath.ath)),
+        line("am", ath.athTs >= now - DAY_MS ? "heute" : fmtDate(ath.athTs)),
+        line("Abstand zum ATH", fmtPct(ath.fromAthPct), cls(ath.fromAthPct)),
+        line("Tage seit ATH", fmtDays(ath.daysSinceAth)),
+        line("seit 1. Januar", fmtPct(ath.ytdPct), cls(ath.ytdPct)),
+        line("52 Wochen Hoch", px(ath.high52w)),
+        line("52 Wochen Tief", px(ath.low52w)),
+        line("Allzeittief*", `${px(ath.atl)} (${fmtDate(ath.atlTs)})`),
+        el("div", "hint", `* seit Datenbeginn ${fmtDate(ath.dataStart)} (Binance Spot)`),
+      );
+    } else set("ath", "lade Tageshistorie …");
+
+    // --- Zyklus ------------------------------------------------------------------------
+    const start = parseDate(this.cycle.start);
+    const end = parseDate(this.cycle.end);
+    const c = m?.daily ? cycleStats(m.daily, start, end, now, price) : null;
+    const preset = CYCLE_PRESETS.find((p) => p.id === this.cycle.id);
+    if (c) {
+      const nodes: (Node | string)[] = [
+        line("Zeitraum", `${fmtDate(c.start)} – ${fmtDate(c.end)}${preset?.estimatedEnd ? "*" : ""}`),
+        line(
+          "Länge",
+          c.complete ? fmtDays(c.lengthDays) : `Tag ${c.elapsedDays.toLocaleString("de-DE")} von ${c.lengthDays.toLocaleString("de-DE")}`,
+        ),
+      ];
+      if (!c.complete) nodes.push(progress(c.progressPct), line("Fortschritt", fmtPct(c.progressPct, 1, false)));
+      nodes.push(
+        line(c.partial ? `Startpreis (${fmtDate(c.firstDataTs)})` : "Startpreis", px(c.startPrice)),
+        line("Zyklus-Hoch", px(c.high)),
+        line("  am", `${fmtDate(c.highTs)} (Tag ${c.highDay})`),
+        line("Zyklus-Tief", px(c.low)),
+        line("  am", `${fmtDate(c.lowTs)} (Tag ${c.lowDay})`),
+        line("Start → Hoch", fmtPct(c.startToHighPct), cls(c.startToHighPct)),
+        line(c.complete ? "Hoch → Ende" : "Hoch → jetzt", fmtPct(c.highToEndPct), cls(c.highToEndPct)),
+        line(c.complete ? "Start → Ende" : "Start → jetzt", fmtPct(c.startToEndPct), cls(c.startToEndPct)),
+      );
+      if (c.partial) nodes.push(el("div", "hint", `Daten erst ab ${fmtDate(c.firstDataTs)} – Zyklus nur teilweise abgedeckt`));
+      if (preset?.estimatedEnd) nodes.push(el("div", "hint", "* Ende geschätzt (nächstes Halving ≈ April 2028)"));
+      set("cycles", ...nodes);
+    } else set("cycles", m?.daily ? "keine Daten im gewählten Zeitraum" : "lade Tageshistorie …");
+
+    // --- Derivate ----------------------------------------------------------------------
     if (m?.mark) {
       set(
         "markPrice",
@@ -217,7 +417,7 @@ export class Sidebar {
     }
 
     if (m?.oi) {
-      const usd = m.oi.oi * (mk.price(sym) ?? 0);
+      const usd = m.oi.oi * (price ?? 0);
       const c5 = mk.oiChange(sym, 5);
       const c60 = mk.oiChange(sym, 60);
       set(
@@ -254,9 +454,51 @@ export class Sidebar {
       );
     } else set("ticker24h", "warte auf Daten …");
 
-    const all = mk.liqSums(now);
+    // --- Liquidationen (Gesamtmarkt) -----------------------------------------------------
+    const liqVal = this.values.get("liqFeed");
+    if (liqVal && !liqVal.hidden) this.updateLiquidations(liqVal, now, line);
+  }
+
+  private updateLiquidations(
+    box: HTMLElement,
+    now: number,
+    line: (l: string, v: string, c?: string) => HTMLElement,
+  ): void {
+    const mk = this.markets;
+    // Balken je Sekunde: Struktur einmal anlegen, danach nur Höhen setzen
+    if (!this.liqBars.length) {
+      box.replaceChildren();
+      const chart = el("div", "liq-chart");
+      chart.title = "Liquidationen je Sekunde, letzte 60 s (oben Longs, unten Shorts)";
+      for (let i = 0; i < 60; i++) {
+        const col = el("div", "liq-col");
+        const upHalf = el("div", "liq-half up");
+        const downHalf = el("div", "liq-half down");
+        upHalf.append(el("div", "liq-long-bar"));
+        downHalf.append(el("div", "liq-short-bar"));
+        col.append(upHalf, downHalf);
+        chart.append(col);
+        this.liqBars.push(col);
+      }
+      box.append(chart, el("div", "liq-info"));
+    }
+    const perSec = liqPerSecond(mk.liqs, now, 60);
+    const max = Math.max(1, ...perSec.map((s) => Math.max(s.long, s.short)));
+    perSec.forEach((s, i) => {
+      const col = this.liqBars[i]!;
+      (col.children[0]!.firstChild as HTMLElement).style.height = `${(s.long / max) * 100}%`;
+      (col.children[1]!.firstChild as HTMLElement).style.height = `${(s.short / max) * 100}%`;
+      col.title = `vor ${59 - i} s · Longs ${fmtCompact(s.long)} $ · Shorts ${fmtCompact(s.short)} $`;
+    });
+
+    const m1 = mk.liqSums(now, undefined, 60_000);
+    const h1 = mk.liqSums(now);
+    const info = box.querySelector(".liq-info") as HTMLElement;
+    const top = topLiquidated(mk.liqs, now, 3600_000, 5);
+    const topBox = el("div", "liq-top");
+    for (const t of top) topBox.append(line(base(t.sym), `${fmtCompact(t.usd)} $`));
     const list = el("div", "liq-list");
-    for (const l of mk.liqs.slice(0, 12)) {
+    for (const l of mk.liqs.slice(0, 10)) {
       const row = el("div", `liq ${l.side === -1 ? "long" : "short"}`);
       row.append(
         el("span", "", fmtTime(l.ts)),
@@ -267,10 +509,14 @@ export class Sidebar {
       list.append(row);
     }
     if (!mk.liqs.length) list.append(el("div", "hint", "noch keine Liquidationen"));
-    set(
-      "liqFeed",
-      line("Longs liquidiert (1 h)", `${fmtCompact(all.long)} $`, "liq-long"),
-      line("Shorts liquidiert (1 h)", `${fmtCompact(all.short)} $`, "liq-short"),
+    info.replaceChildren(
+      line("Longs · 1 min", `${fmtCompact(m1.long)} $`, "liq-long"),
+      line("Shorts · 1 min", `${fmtCompact(m1.short)} $`, "liq-short"),
+      line("Longs · 1 h", `${fmtCompact(h1.long)} $`, "liq-long"),
+      line("Shorts · 1 h", `${fmtCompact(h1.short)} $`, "liq-short"),
+      el("div", "sub", "Top-Coins (1 h)"),
+      topBox,
+      el("div", "sub", "Letzte"),
       list,
     );
   }

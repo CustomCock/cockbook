@@ -78,6 +78,12 @@ class BinanceUsdmConfig(_Model):
     # Refresh, wenn der Mid den inneren Anteil des Snapshot-Preisbereichs verlässt
     # (außerhalb kennt das lokale Buch unveränderte Level nicht).
     coverage_refresh_fraction: Annotated[float, Field(gt=0, le=1)] = 0.5
+    # Mindestabstand zwischen zwei Coverage-Refreshes (je Refresh ein Snapshot, Gewicht 20)
+    coverage_refresh_min_interval_s: Annotated[float, Field(ge=0)] = 5.0
+    # Liquidationen des Gesamtmarkts (alle Coins, sekündlich) statt nur der eigenen Symbole
+    liquidations_all_market: bool = True
+    # 1m-Kerzen-Historie beim Start (max. 1500 = 25 h; Gewicht 10 je Symbol)
+    candles_1m_history: Annotated[int, Field(ge=1, le=1500)] = 1500
     validation: BookValidationConfig = Field(default_factory=BookValidationConfig)
     metrics: MetricsConfig = Field(default_factory=MetricsConfig)
     reconnect: ReconnectConfig = Field(default_factory=ReconnectConfig)
@@ -124,6 +130,15 @@ class UiConfig(_Model):
     bubble_max_px: Annotated[float, Field(gt=0)] = 40.0
 
 
+class HistoryConfig(_Model):
+    """Lange Tageshistorie (Spot) für ATH, Zyklen, Jahresperformance."""
+
+    enabled: bool = True
+    spot_rest_url: str = "https://data-api.binance.vision"
+    start: str = "2017-01-01"  # frühestes Datum; Binance-Spot beginnt im August 2017
+    refresh_s: Annotated[float, Field(ge=60)] = 3600.0
+
+
 class RecorderConfig(_Model):
     data_dir: Path = Path("data")
     flush_interval_s: Annotated[float, Field(gt=0)] = 5.0
@@ -136,6 +151,7 @@ class AppConfig(_Model):
     aggregation: AggregationConfig = Field(default_factory=AggregationConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
     ui: UiConfig = Field(default_factory=UiConfig)
+    history: HistoryConfig = Field(default_factory=HistoryConfig)
     recorder: RecorderConfig = Field(default_factory=RecorderConfig)
 
 

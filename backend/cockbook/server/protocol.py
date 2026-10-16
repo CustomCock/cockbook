@@ -19,7 +19,12 @@ Kennzahl-Frames (an alle Clients, Seitenleiste zeigt alle Coins):
 ``oi``   {sym, ts, oi}                Open Interest (Basis-Währung)
 ``ls``   {sym, ts, p, long, short, ratio}   Long/Short-Ratio (Accounts) je Periode p
 ``tv``   {sym, ts, p, buy, sell, ratio}     Taker Buy/Sell-Volumen je Periode p
-``liq``  {sym, ts, side, price, qty}  einzelne Liquidation (für die Liste aller Coins)
+``liq``  {sym, ts, side, price, qty}  einzelne Liquidation (Gesamtmarkt, alle Coins)
+``d1``   {sym, x: [[t, o, h, l, c, v], …]}  Tageskerzen (Spot) für ATH/Zyklen/YTD
+``sync`` {sym, ts, synced, resyncs, reason}  Orderbuch-Diagnose je Coin
+
+Kerzen-Frames im Symbol-Kanal: ``kh`` = 1m-Historie (beim Abo), ``k`` = laufende 1m-Kerze
+{sym, x: [t, o, h, l, c, v, closed]}. 3m/5m/10m baut das Frontend aus 1m.
 
 Kennzahlen als float: reine Anzeige, keine Orderbuch-Keys.
 
@@ -38,6 +43,7 @@ import msgpack
 
 from cockbook.core.aggregation import HeatmapColumn
 from cockbook.core.events import (
+    CandleBar,
     Event,
     Liquidation,
     LongShortRatio,
@@ -158,15 +164,48 @@ def encode_stat(e: Event) -> tuple[str, bytes] | None:
     return kind, _pack({"t": kind, **base})
 
 
-def encode_liquidation(e: Liquidation, price: float) -> bytes:
+def encode_liquidation(e: Liquidation) -> bytes:
     return _pack(
         {
             "t": "liq",
             "sym": e.symbol,
             "ts": _ms(e.ts_ns),
             "side": 1 if e.side is Side.BID else -1,
-            "price": price,
+            "price": float(e.price),
             "qty": float(e.qty),
+        }
+    )
+
+
+def _bar(b: CandleBar) -> list[float | int]:
+    return [
+        b.open_time_ns // _NS_PER_MS,
+        float(b.open),
+        float(b.high),
+        float(b.low),
+        float(b.close),
+        float(b.volume),
+    ]
+
+
+def encode_bars(kind: str, symbol: str, bars: list[CandleBar]) -> bytes:
+    """``kind``: "kh" (1m-Historie) oder "d1" (Tageskerzen)."""
+    return _pack({"t": kind, "sym": symbol, "x": [_bar(b) for b in bars]})
+
+
+def encode_live_candle(symbol: str, bar: CandleBar, closed: bool) -> bytes:
+    return _pack({"t": "k", "sym": symbol, "x": [*_bar(bar), closed]})
+
+
+def encode_sync(symbol: str, ts_ns: int, synced: bool, resyncs: int, reason: str) -> bytes:
+    return _pack(
+        {
+            "t": "sync",
+            "sym": symbol,
+            "ts": _ms(ts_ns),
+            "synced": synced,
+            "resyncs": resyncs,
+            "reason": reason,
         }
     )
 

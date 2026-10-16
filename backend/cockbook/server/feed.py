@@ -19,6 +19,9 @@ from cockbook.core.events import (
     BookDelta,
     BookSnapshot,
     BookSyncStatus,
+    Candle,
+    CandleBar,
+    CandleHistory,
     Event,
     InstrumentInfo,
     Liquidation,
@@ -31,10 +34,13 @@ from cockbook.core.events import (
 )
 from cockbook.server.bridge import Bridge
 from cockbook.server.protocol import (
+    encode_bars,
     encode_column,
     encode_control,
     encode_liquidation,
+    encode_live_candle,
     encode_stat,
+    encode_sync,
 )
 
 log = logging.getLogger(__name__)
@@ -46,7 +52,10 @@ _CHART_EVENTS: tuple[type[Event], ...] = (
     BookSyncStatus,
     Trade,
     Liquidation,
+    Candle,
+    CandleHistory,
 )
+_MAX_1M_CANDLES = 2000
 _STAT_EVENTS: tuple[type[Event], ...] = (
     MarkPrice,
     Ticker24h,
@@ -82,6 +91,9 @@ class MarketFeed:
             for sym, bt in symbols.items()
         }
         self._hello_sent: set[str] = set()
+        self._candles: dict[str, dict[int, CandleBar]] = {sym: {} for sym in symbols}
+        self._candle_dirty: dict[str, tuple[CandleBar, bool]] = {}
+        self._resyncs: dict[str, int] = dict.fromkeys(symbols, 0)
         for sym in symbols:
             bridge.register_symbol(sym)
         # Messwerte für die Performance-Auswertung
@@ -99,20 +111,56 @@ class MarketFeed:
         return cls(symbols, cfg.aggregation, cfg.ui, bus, bridge)
 
     async def _on_chart_event(self, e: Event) -> None:
+        if isinstance(e, Liquidation):
+            # Gesamtmarkt: Liste aller Coins; Marker nur für eigene Symbole (Aggregator)
+            self.bridge.publish_stat(e.symbol, "liq", encode_liquidation(e))
+        if isinstance(e, CandleHistory) and e.interval == "1d":
+            self.bridge.publish_stat(e.symbol, "d1", encode_bars("d1", e.symbol, list(e.bars)))
+            return
         agg = self.aggs.get(e.symbol)
         if agg is None:
+            return
+        if isinstance(e, CandleHistory):
+            store = self._candles[e.symbol]
+            for b in e.bars:
+                store[b.open_time_ns] = b
+            self._publish_candle_history(e.symbol)
+            return
+        if isinstance(e, Candle):
+            if e.interval == "1m":
+                self._candles[e.symbol][e.bar.open_time_ns] = e.bar
+                self._candle_dirty[e.symbol] = (e.bar, e.closed)
             return
         agg.on_event(e)
         if isinstance(e, InstrumentInfo):
             self.bridge.register_symbol(e.symbol, exchange=e.exchange, tick_size=str(e.tick_size))
         elif isinstance(e, BookSyncStatus):
+            if not e.synced:
+                self._resyncs[e.symbol] += 1
             self.bridge.set_status(
                 e.symbol,
                 encode_control("status", symbol=e.symbol, synced=e.synced, reason=e.reason),
             )
-        elif isinstance(e, Liquidation) and agg.instrument is not None:
-            price = float(e.price_ticks * agg.instrument.tick_size)
-            self.bridge.publish_stat(e.symbol, "liq", encode_liquidation(e, price))
+            self.bridge.publish_stat(
+                e.symbol,
+                "sync",
+                encode_sync(e.symbol, e.ts_ns, e.synced, self._resyncs[e.symbol], e.reason),
+            )
+
+    def _publish_candle_history(self, symbol: str) -> None:
+        store = self._candles[symbol]
+        while len(store) > _MAX_1M_CANDLES:
+            del store[min(store)]
+        bars = [store[t] for t in sorted(store)]
+        self.bridge.set_static(symbol, "kh", encode_bars("kh", symbol, bars))
+
+    def _flush_candles(self) -> None:
+        """Laufende Kerzen höchstens einmal pro Spalten-Intervall senden."""
+        for sym, (bar, closed) in self._candle_dirty.items():
+            self.bridge.send_live(sym, encode_live_candle(sym, bar, closed))
+            if closed:
+                self._publish_candle_history(sym)  # Historie für neue Abonnenten aktuell halten
+        self._candle_dirty.clear()
 
     async def _on_stat_event(self, e: Event) -> None:
         if e.symbol not in self.aggs:
@@ -168,6 +216,7 @@ class MarketFeed:
                 break
             except TimeoutError:
                 pass
+            self._flush_candles()
             for sym, agg in self.aggs.items():
                 if not agg.ready:
                     continue

@@ -3,6 +3,7 @@
  * Reine Datenhaltung ohne DOM – die Seitenleiste liest daraus.
  */
 
+import type { DailyRow } from "./cycles";
 import type { StatFrame } from "./net";
 
 export interface Liq {
@@ -25,7 +26,13 @@ export interface MarketState {
   tv?: Extract<StatFrame, { t: "tv" }>;
   /** Open-Interest-Verlauf (für Veränderung über Zeitfenster) */
   oiHist: { ts: number; oi: number }[];
+  /** Tageskerzen (Spot) für ATH, Zyklen, YTD */
+  daily?: DailyRow[];
+  sync?: Extract<StatFrame, { t: "sync" }>;
 }
+
+/** Obergrenze der vorgehaltenen Liquidationen (Gesamtmarkt kann sehr aktiv sein). */
+const MAX_LIQS = 5000;
 
 export const LIQ_WINDOW_MS = 60 * 60 * 1000; // Summen der letzten Stunde
 const OI_HIST_MS = 4 * 60 * 60 * 1000;
@@ -55,8 +62,12 @@ export class Markets {
   }
 
   apply(f: StatFrame): void {
-    const m = this.ensure(f.sym);
     this.version++;
+    if (f.t === "liq") {
+      this.addLiq(f);
+      return;
+    }
+    const m = this.ensure(f.sym);
     switch (f.t) {
       case "mark":
         m.mark = f;
@@ -77,20 +88,33 @@ export class Markets {
       case "tv":
         m.tv = f;
         break;
-      case "liq": {
-        // Nach Reconnect/Symbolwechsel schickt der Server die letzten Liquidationen erneut
-        const key = `${f.sym}|${f.ts}|${f.side}|${f.price}|${f.qty}`;
-        if (this.liqKeys.has(key)) return;
-        this.liqKeys.add(key);
-        this.liqs.unshift({ ...f, usd: f.price * f.qty });
-        this.prune(f.ts);
+      case "d1":
+        m.daily = f.x;
         break;
-      }
+      case "sync":
+        m.sync = f;
+        break;
     }
   }
 
+  private addLiq(f: Extract<StatFrame, { t: "liq" }>): void {
+    // Nach Reconnect/Symbolwechsel schickt der Server die letzten Liquidationen erneut
+    const key = `${f.sym}|${f.ts}|${f.side}|${f.price}|${f.qty}`;
+    if (this.liqKeys.has(key)) return;
+    this.liqKeys.add(key);
+    const liq: Liq = { ...f, usd: f.price * f.qty };
+    // meist neuester -> vorne; nach Reconnect evtl. ältere -> einsortieren
+    let i = 0;
+    while (i < this.liqs.length && this.liqs[i]!.ts > liq.ts) i++;
+    this.liqs.splice(i, 0, liq);
+    this.prune(this.liqs[0]!.ts);
+  }
+
   private prune(now: number): void {
-    while (this.liqs.length && this.liqs[this.liqs.length - 1]!.ts < now - LIQ_WINDOW_MS) {
+    while (
+      this.liqs.length &&
+      (this.liqs.length > MAX_LIQS || this.liqs[this.liqs.length - 1]!.ts < now - LIQ_WINDOW_MS)
+    ) {
       const l = this.liqs.pop()!;
       this.liqKeys.delete(`${l.sym}|${l.ts}|${l.side}|${l.price}|${l.qty}`);
     }
@@ -124,15 +148,47 @@ export class Markets {
   }
 
   /** Liquidations-Summen (USDT) im Zeitfenster, optional nur für ein Symbol. */
-  liqSums(now: number, symbol?: string): { long: number; short: number } {
+  liqSums(now: number, symbol?: string, windowMs = LIQ_WINDOW_MS): { long: number; short: number } {
     let long = 0;
     let short = 0;
     for (const l of this.liqs) {
-      if (l.ts < now - LIQ_WINDOW_MS) break;
+      if (l.ts < now - windowMs) break;
       if (symbol && l.sym !== symbol) continue;
       if (l.side === -1) long += l.usd;
       else short += l.usd;
     }
     return { long, short };
   }
+}
+
+/** Liquidationen je Sekunde der letzten `seconds` Sekunden (älteste zuerst). */
+export function liqPerSecond(
+  liqs: Liq[],
+  now: number,
+  seconds = 60,
+): { long: number; short: number }[] {
+  const out = Array.from({ length: seconds }, () => ({ long: 0, short: 0 }));
+  const end = Math.floor(now / 1000);
+  for (const l of liqs) {
+    const age = end - Math.floor(l.ts / 1000);
+    if (age >= seconds) break;
+    if (age < 0) continue;
+    const b = out[seconds - 1 - age]!;
+    if (l.side === -1) b.long += l.usd;
+    else b.short += l.usd;
+  }
+  return out;
+}
+
+/** Coins mit den höchsten Liquidationen im Fenster. */
+export function topLiquidated(liqs: Liq[], now: number, windowMs: number, n = 5): { sym: string; usd: number }[] {
+  const by = new Map<string, number>();
+  for (const l of liqs) {
+    if (l.ts < now - windowMs) break;
+    by.set(l.sym, (by.get(l.sym) ?? 0) + l.usd);
+  }
+  return [...by.entries()]
+    .map(([sym, usd]) => ({ sym, usd }))
+    .sort((a, b) => b.usd - a.usd)
+    .slice(0, n);
 }

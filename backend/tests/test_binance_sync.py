@@ -205,18 +205,64 @@ def test_crossed_book_triggers_resync() -> None:
     assert s.stats.crossed == 1
 
 
-def test_mid_leaving_coverage_refreshes() -> None:
+def coverage_sync() -> BinanceDepthSync:
     s = BinanceDepthSync(INST, coverage_refresh_fraction=0.5)
     s.on_depth(upd(1, 10, 0))
     s.on_snapshot(snap(5, bids=((100, "1"), (80, "1")), asks=((101, "1"), (121, "1"))))
     # Coverage 80..121, Mid 100.5 -> Grenzen 90.25 .. 110.75
+    return s
+
+
+def test_mid_leaving_coverage_requests_refresh_without_resync() -> None:
+    s = coverage_sync()
     assert types(s.on_depth(upd(11, 20, 10, bids=((100, "0"), (95, "1"))))) == ["BookDelta"]
-    events = s.on_depth(upd(21, 30, 20, bids=((95, "0"), (80, "0")), asks=((101, "0"),)))
-    # Bids leer -> kein Mid berechenbar -> kein Refresh; jetzt Asks weit weg ziehen
-    assert types(events) == ["BookDelta"]
-    events = s.on_depth(upd(31, 40, 30, bids=((115, "1"),), asks=((121, "0"), (116, "1"))))
-    assert types(events) == ["BookDelta", "status:False"]
+    assert not s.wants_refresh
+    events = s.on_depth(
+        upd(21, 30, 20, bids=((115, "1"),), asks=((101, "0"), (121, "0"), (116, "1")))
+    )
+    assert types(events) == ["BookDelta"]  # KEIN status:False mehr – Buch bleibt gültig
+    assert s.synced
+    assert s.wants_refresh
     assert s.stats.coverage_refreshes == 1
+    s.on_depth(upd(31, 40, 30, bids=((115, "2"),)))
+    assert s.stats.coverage_refreshes == 1  # nicht mehrfach anfordern
+
+
+def test_refresh_merges_untouched_levels_and_keeps_touched() -> None:
+    s = coverage_sync()
+    s.on_depth(upd(21, 30, 10, bids=((115, "1"),), asks=((101, "0"), (121, "0"), (116, "1"))))
+    assert s.wants_refresh
+    # Refresh-Snapshot bei L=30: neue Level weit oben (140), 116 mit anderem Wert
+    refresh = snap(30, bids=((115, "1"), (90, "4")), asks=((116, "1"), (140, "7")))
+    # Bevor der Snapshot verarbeitet wird, ändert ein Delta 116 (u=40 > L=30)
+    s.on_depth(upd(31, 40, 30, asks=((116, "9"),)))
+    events = s.on_refresh_snapshot(refresh)
+    assert types(events) == ["BookDelta"]  # synthetisches Delta mit den eingearbeiteten Leveln
+    assert s.synced
+    assert not s.wants_refresh
+    assert s.book.qty(Side.ASK, 140) == Decimal(7)  # neu dazugekommen
+    assert s.book.qty(Side.BID, 90) == Decimal(4)
+    assert s.book.qty(Side.ASK, 116) == Decimal(9)  # seit L berührt -> lokaler Wert bleibt
+    assert s.book.qty(Side.BID, 100) == Decimal(0)
+
+
+def test_refresh_waits_until_local_book_reaches_snapshot_id() -> None:
+    s = coverage_sync()
+    assert s.on_refresh_snapshot(snap(50, bids=((100, "1"),), asks=((150, "3"),))) == []
+    assert s.book.qty(Side.ASK, 150) == 0
+    events = s.on_depth(upd(11, 50, 10))
+    assert types(events) == ["BookDelta", "BookDelta"]  # echtes + synthetisches Delta
+    assert s.book.qty(Side.ASK, 150) == Decimal(3)
+
+
+def test_refresh_without_history_falls_back_to_resync() -> None:
+    s = BinanceDepthSync(INST, history=1, coverage_refresh_fraction=1.0)
+    s.on_depth(upd(1, 10, 0))
+    s.on_snapshot(snap(5))
+    for i in range(1, 4):
+        s.on_depth(upd(i * 10 + 1, i * 10 + 10, i * 10))
+    events = s.on_refresh_snapshot(snap(12))
+    assert types(events) == ["status:False"]
 
 
 # --- Validierung --------------------------------------------------------------------------

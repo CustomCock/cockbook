@@ -37,7 +37,9 @@ export type ChartFrame =
   | { t: "col"; sym: string; ts: number; s: boolean; b: number; q: Uint8Array }
   | { t: "bbo"; sym: string; ts: number; bb: number | null; ba: number | null }
   | { t: "tr"; sym: string; ts: number; x: [number, number, number, number][] }
-  | { t: "lq"; sym: string; ts: number; x: [number, number, number][] };
+  | { t: "lq"; sym: string; ts: number; x: [number, number, number][] }
+  | { t: "kh"; sym: string; x: number[][] }
+  | { t: "k"; sym: string; x: [number, number, number, number, number, number, boolean] };
 
 /** Kennzahl-Frames (alle Symbole). */
 export type StatFrame =
@@ -56,12 +58,14 @@ export type StatFrame =
   | { t: "oi"; sym: string; ts: number; oi: number }
   | { t: "ls"; sym: string; ts: number; p: string; long: number; short: number; ratio: number }
   | { t: "tv"; sym: string; ts: number; p: string; buy: number; sell: number; ratio: number }
-  | { t: "liq"; sym: string; ts: number; side: 1 | -1; price: number; qty: number };
+  | { t: "liq"; sym: string; ts: number; side: 1 | -1; price: number; qty: number }
+  | { t: "d1"; sym: string; x: [number, number, number, number, number, number][] }
+  | { t: "sync"; sym: string; ts: number; synced: boolean; resyncs: number; reason: string };
 
 export type BinaryFrame = ChartFrame | StatFrame;
 
 export function isChartFrame(f: BinaryFrame): f is ChartFrame {
-  return f.t === "col" || f.t === "bbo" || f.t === "tr" || f.t === "lq";
+  return f.t === "col" || f.t === "bbo" || f.t === "tr" || f.t === "lq" || f.t === "kh" || f.t === "k";
 }
 
 export interface Handlers {

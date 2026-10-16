@@ -3,9 +3,10 @@
 import asyncio
 import json
 from collections.abc import Callable
+from decimal import Decimal
 from pathlib import Path
 
-from cockbook.adapters.binance import BinanceUsdmAdapter
+from cockbook.adapters.binance import BinanceLiquidationStream, BinanceUsdmAdapter
 from cockbook.config import (
     BinanceUsdmConfig,
     BookValidationConfig,
@@ -40,6 +41,9 @@ def cfg_for(fake: FakeBinance) -> BinanceUsdmConfig:
         ws_market_url=f"ws://{fake.base}/market",
         validation=BookValidationConfig(enabled=False),
         metrics=MetricsConfig(enabled=False),
+        # Fake-Snapshots haben nur 3 Level -> Coverage-Refresh hier nicht testen
+        coverage_refresh_fraction=1.0,
+        liquidations_all_market=False,
         reconnect=ReconnectConfig(initial_backoff_s=0.05, max_backoff_s=0.1, stale_timeout_s=5),
     )
 
@@ -191,3 +195,32 @@ async def test_worker_recovers_from_malformed_snapshot(monkeypatch: object) -> N
             adapter.stop()
             await task
         assert fake.depth_calls == 2
+
+
+async def test_all_market_liquidations_skip_coin_margined() -> None:
+    def liq(sym: str, st: int | None) -> dict[str, object]:
+        o = {"s": sym, "S": "BUY", "o": "LIMIT", "f": "IOC", "q": "2", "p": "3000.00",
+             "ap": "3000.00", "X": "FILLED", "l": "2", "z": "2", "T": 1700000000000}  # fmt: skip
+        data: dict[str, object] = {"e": "forceOrder", "E": 1700000000000, "o": o}
+        if st is not None:
+            data["st"] = st
+        return {"stream": "!forceOrder@arr", "data": data}
+
+    async with FakeBinance() as fake:
+        fake.liquidation_script = [liq("ETHUSDT", 1), liq("BTCUSD_PERP", 2), liq("BTCUSDT", None)]
+        events: list[Liquidation] = []
+
+        async def collect(e: Liquidation) -> None:
+            events.append(e)
+
+        async with EventBus() as bus:
+            bus.subscribe(Liquidation, collect)
+            src = BinanceLiquidationStream(cfg_for(fake), bus)
+            task = asyncio.create_task(src.run())
+            await wait_for(lambda: len(events) >= 2)
+            await asyncio.sleep(0.1)
+            src.stop()
+            await task
+        assert [e.symbol for e in events] == ["ETHUSDT", "BTCUSDT"]  # st=2 verworfen
+        assert events[0].side is Side.BID  # BUY = Short liquidiert
+        assert events[0].price == Decimal("3000.00")

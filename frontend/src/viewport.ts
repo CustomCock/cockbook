@@ -17,7 +17,8 @@ export interface View {
   autoCenter: boolean;
 }
 
-export const MIN_COL_WIDTH = 0.25;
+// Sehr weit herauszoomen erlaubt (für Kerzen über Stunden): 0.002 px/Spalte = 1 px ~ 50 s
+export const MIN_COL_WIDTH = 0.002;
 export const MAX_COL_WIDTH = 24;
 
 export function priceUnit(priceTicks: number, bucketTicks: number): number {

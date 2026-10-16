@@ -22,7 +22,10 @@ exchanges:
     depth_update_ms: 100          # 100 | 250 | 500
     snapshot_limit: 1000          # Gewicht 20 von 2400/min
     max_buffered_updates: 10000
-    coverage_refresh_fraction: 0.5  # neuer Snapshot, wenn der Mid die innere Hälfte verlässt
+    coverage_refresh_fraction: 0.5  # Refresh, wenn der Mid die innere Hälfte des Snapshots verlässt
+    coverage_refresh_min_interval_s: 5  # Refresh wird eingearbeitet, ohne das Buch zu verwerfen
+    liquidations_all_market: true   # Liquidationen aller Coins (sekündlich) statt nur der eigenen
+    candles_1m_history: 1500        # 1m-Kerzen beim Start (max. 1500 = 25 h)
     validation:
       enabled: true
       interval_s: 30              # im Simulator häufiger prüfen
@@ -57,6 +60,9 @@ ui:
   bubble_px_per_sqrt_kusd: 1.2  # Bubble-Radius = sqrt(Gegenwert/1000 USDT) * Faktor
                                 # (100k USDT -> 12 px, 1 Mio. -> 38 px)
   bubble_max_px: 40
+
+history:
+  spot_rest_url: http://127.0.0.1:9876
 
 recorder:
   data_dir: data/sim # getrennt von echten Aufzeichnungen (gitignored)

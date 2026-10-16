@@ -96,7 +96,8 @@ class Trade(Event):
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Liquidation(Event):
-    price_ticks: int
+    price_ticks: int  # auf Ticks gerundet (Durchschnittspreise liegen oft zwischen Ticks)
+    price: Decimal  # exakter Ausführungspreis – für Anzeige und USDT-Gegenwert
     qty: Decimal
     # Seite der Liquidations-*Order*: ASK = Long wird liquidiert (Zwangsverkauf).
     side: Side
@@ -202,3 +203,34 @@ class TakerVolume(Event):
     buy_volume: Decimal
     sell_volume: Decimal
     ratio: Decimal
+
+
+# --- Kerzen ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class CandleBar:
+    open_time_ns: int
+    open: Decimal
+    high: Decimal
+    low: Decimal
+    close: Decimal
+    volume: Decimal  # Basis-Währung
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Candle(Event):
+    """Laufende oder abgeschlossene Kerze (Live-Stream)."""
+
+    interval: str  # z. B. "1m"
+    bar: CandleBar
+    closed: bool
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class CandleHistory(Event):
+    """Historie als Block (REST). ``source`` z. B. "futures" (1m) oder "spot" (1d)."""
+
+    interval: str
+    source: str
+    bars: tuple[CandleBar, ...]

@@ -23,6 +23,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import math
 import random
 import time
 from decimal import Decimal
@@ -162,6 +163,9 @@ class Simulator:
         self.public: dict[web.WebSocketResponse, set[str]] = {}
         self.market: dict[web.WebSocketResponse, set[str]] = {}
         self.trade_id = 1
+        self.daily: dict[str, list[list[Any]]] = {}
+        # laufende 1m-Kerze je Symbol: [open_ms, o, h, l, c, v]
+        self.candles: dict[str, list[Any]] = {}
         self.oi = {
             sym: 50_000.0 / (mid * float(tick)) * 1000 for sym, (tick, mid, _) in SYMBOLS.items()
         }
@@ -192,10 +196,38 @@ class Simulator:
                     await self._trade(sym, book)
                 if self.rng.random() < 0.01:
                     await self._liquidation(sym, book)
+                if self.rng.random() < 0.4:
+                    await self._send_kline(sym, int(time.time() * 1000))
+            if self.rng.random() < 0.3:
+                await self._foreign_liquidation()
             if time.monotonic() - last_stats >= 1.0:
                 last_stats = time.monotonic()
                 for sym, book in self.books.items():
                     await self._stats(sym, book)
+
+    def _candle_update(self, sym: str, price: Decimal, qty: float, now: int) -> None:
+        start = now // 60_000 * 60_000
+        c = self.candles.get(sym)
+        if c is None or c[0] != start:
+            c = self.candles[sym] = [start, price, price, price, price, 0.0]
+        c[2] = max(c[2], price)
+        c[3] = min(c[3], price)
+        c[4] = price
+        c[5] += qty
+
+    async def _send_kline(self, sym: str, now: int) -> None:
+        c = self.candles.get(sym)
+        if c is None:
+            return
+        closed = now // 60_000 * 60_000 != c[0]
+        data = {
+            "e": "kline", "E": now, "s": sym,
+            "k": {"t": c[0], "T": c[0] + 59_999, "s": sym, "i": "1m", "o": str(c[1]),
+                  "c": str(c[4]), "h": str(c[2]), "l": str(c[3]), "v": f"{c[5]:.3f}", "x": closed},
+        }  # fmt: skip
+        await self._send(self.market, sym, f"{sym.lower()}@kline_1m", data)
+        if closed:
+            del self.candles[sym]
 
     async def _trade(self, sym: str, book: SimBook) -> None:
         buy = self.rng.random() < 0.5
@@ -214,6 +246,7 @@ class Simulator:
             "m": not buy,
         }
         self.trade_id += 1
+        self._candle_update(sym, price * book.tick, float(str(data["q"])), now)
         await self._send(self.market, sym, f"{sym.lower()}@aggTrade", data)
 
     async def _liquidation(self, sym: str, book: SimBook) -> None:
@@ -239,6 +272,19 @@ class Simulator:
             },
         }
         await self._send(self.market, sym, f"{sym.lower()}@forceOrder", data)
+        await self._send(self.market, "*ALL", "!forceOrder@arr", {**data, "st": 1})
+
+    async def _foreign_liquidation(self) -> None:
+        """Liquidationen anderer Coins für den Gesamtmarkt-Stream."""
+        sym, price = self.rng.choice([("DOGEUSDT", 0.18), ("BNBUSDT", 600.0), ("ADAUSDT", 0.45)])
+        now = int(time.time() * 1000)
+        qty = f"{self.rng.expovariate(1 / (20_000 / price)):.1f}"
+        o = {"s": sym, "S": self.rng.choice(["BUY", "SELL"]), "o": "LIMIT", "f": "IOC",
+             "q": qty, "p": str(price), "ap": str(price), "X": "FILLED", "l": qty, "z": qty,
+             "T": now}  # fmt: skip
+        await self._send(
+            self.market, "*ALL", "!forceOrder@arr", {"e": "forceOrder", "E": now, "o": o, "st": 1}
+        )
 
     async def _stats(self, sym: str, book: SimBook) -> None:
         now = int(time.time() * 1000)
@@ -288,7 +334,12 @@ class Simulator:
                             {"filterType": "LOT_SIZE", "stepSize": "0.001"},
                         ],
                     }
-                    for sym, (tick, _, _) in SYMBOLS.items()
+                    for sym, (tick, _, _) in {
+                        **SYMBOLS,
+                        "DOGEUSDT": (Decimal("0.00001"), 0, 0.0),
+                        "BNBUSDT": (Decimal("0.01"), 0, 0.0),
+                        "ADAUSDT": (Decimal("0.0001"), 0, 0.0),
+                    }.items()
                 ]
             }
         )
@@ -334,10 +385,52 @@ class Simulator:
             ]
         )
 
+    async def klines_1m(self, request: web.Request) -> web.Response:
+        sym = request.query["symbol"]
+        book = self.books[sym]
+        limit = int(request.query.get("limit", "500"))
+        now_min = int(time.time() * 1000) // 60_000 * 60_000
+        rows = []
+        price = float(book.mid * book.tick)
+        for i in range(limit):
+            t = now_min - i * 60_000
+            o = price * (1 + self.rng.gauss(0, 0.0008))
+            h, low = max(o, price) * 1.0004, min(o, price) * 0.9996
+            rows.append(
+                [t, f"{o:.6f}", f"{h:.6f}", f"{low:.6f}", f"{price:.6f}", "12.3", t + 59_999]
+            )
+            price = o
+        return web.json_response(rows[::-1])
+
+    async def klines_1d_spot(self, request: web.Request) -> web.Response:
+        """Synthetische Tageshistorie ab 2017 (deterministisch je Symbol)."""
+        sym = request.query["symbol"]
+        start = int(request.query["startTime"])
+        limit = int(request.query.get("limit", "500"))
+        if sym not in self.daily:
+            rng = random.Random(sym)
+            day0 = 1_502_928_000_000
+            days = (int(time.time() * 1000) - day0) // 86_400_000 + 1
+            end = float(self.books[sym].mid * self.books[sym].tick)
+            closes = [end]
+            for _ in range(days - 1):
+                closes.append(closes[-1] / math.exp(rng.gauss(0.0007, 0.035)))
+            closes.reverse()
+            self.daily[sym] = [
+                [day0 + i * 86_400_000, f"{c * 0.99:.6f}", f"{c * 1.03:.6f}", f"{c * 0.97:.6f}",
+                 f"{c:.6f}", "1000", day0 + (i + 1) * 86_400_000 - 1]
+                for i, c in enumerate(closes)
+            ]  # fmt: skip
+        rows = [r for r in self.daily[sym] if r[0] >= start][:limit]
+        return web.json_response(rows)
+
     async def _ws(self, request: web.Request, pool: dict[web.WebSocketResponse, set[str]]) -> Any:
         ws = web.WebSocketResponse()
         await ws.prepare(request)
-        syms = {st.split("@")[0].upper() for st in request.query.get("streams", "").split("/")}
+        syms = {
+            "*ALL" if st.startswith("!") else st.split("@")[0].upper()
+            for st in request.query.get("streams", "").split("/")
+        }
         pool[ws] = syms
         try:
             async for _ in ws:
@@ -359,6 +452,8 @@ async def serve(port: int) -> None:
     app.router.add_get("/fapi/v1/exchangeInfo", sim.exchange_info)
     app.router.add_get("/fapi/v1/depth", sim.depth)
     app.router.add_get("/fapi/v1/openInterest", sim.open_interest)
+    app.router.add_get("/fapi/v1/klines", sim.klines_1m)
+    app.router.add_get("/api/v3/klines", sim.klines_1d_spot)
     app.router.add_get("/futures/data/globalLongShortAccountRatio", sim.long_short)
     app.router.add_get("/futures/data/takerlongshortRatio", sim.taker)
     app.router.add_get("/public/stream", sim.ws_public)

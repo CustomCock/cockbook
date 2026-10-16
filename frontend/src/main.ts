@@ -1,8 +1,10 @@
 import "./style.css";
 import { AXIS_H, AXIS_W, drawPriceAxis, drawTimeAxis, formatPrice, gridStepTicks, timeLabel, type Instrument } from "./axes";
+import { aggregate, buildCandles, CandleSeries, RRectBuilder, type CandleMinutes } from "./candles";
 import { computeRange, type ScaleRange, type ScaleSettings } from "./colorscale";
+import { CYCLE_PRESETS } from "./cycles";
 import { loadFeatures, saveFeatures } from "./features";
-import { HeatmapRenderer, PRIM, PrimRenderer } from "./gl";
+import { HeatmapRenderer, PRIM, PrimRenderer, RRectRenderer } from "./gl";
 import { Markets, decimalsOf } from "./markets";
 import { connect, toFloat32, type Hello } from "./net";
 import {
@@ -15,13 +17,15 @@ import {
   VertexBuilder,
   type SceneParams,
 } from "./scene";
-import { Sidebar } from "./sidebar";
+import { Sidebar, type CycleChoice } from "./sidebar";
 import { HeatmapStore, rowsFor, type TradeBin } from "./store";
 import { panY, priceUnit, recenter, visibleCols, xToCol, yToUnit, zoomX, zoomY, type View } from "./viewport";
 
 const WS_URL = (import.meta.env.VITE_COCKBOOK_WS as string | undefined) ?? "ws://127.0.0.1:8765/ws";
 const SETTINGS_KEY = "cockbook.settings.v1";
 const SYMBOL_KEY = "cockbook.symbol.v1";
+const CANDLE_KEY = "cockbook.candles.v1";
+const CYCLE_KEY = "cockbook.cycle.v1";
 const MAX_HISTORY_COLS = 4096;
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -38,6 +42,7 @@ const perfEl = $<HTMLElement>("perf");
 
 const heatmap = new HeatmapRenderer(glCanvas);
 const prims = new PrimRenderer(heatmap.gl);
+const rrects = new RRectRenderer(heatmap.gl);
 const params = new URLSearchParams(location.search);
 
 /**
@@ -72,6 +77,31 @@ let featureVersion = 0;
 
 const markets = new Markets();
 const features = loadFeatures();
+const candles = new CandleSeries();
+
+function loadJson<T>(key: string, fallback: T): T {
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw) return { ...fallback, ...(JSON.parse(raw) as T) };
+  } catch {
+    /* egal */
+  }
+  return fallback;
+}
+function saveJson(key: string, value: unknown): void {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    /* egal */
+  }
+}
+let candleMinutes: CandleMinutes = loadJson(CANDLE_KEY, { minutes: 1 as CandleMinutes }).minutes;
+const defaultCycle = CYCLE_PRESETS[0]!;
+let cycleChoice: CycleChoice = loadJson(CYCLE_KEY, {
+  id: defaultCycle.id,
+  start: defaultCycle.start,
+  end: defaultCycle.end,
+});
 
 interface Saved {
   contrastLog: number;
@@ -140,13 +170,31 @@ resize();
 
 // --- Seitenleiste ----------------------------------------------------------------------------
 
-const sidebar = new Sidebar($<HTMLElement>("sidebar"), markets, features, {
-  onSelect: (sym) => selectSymbol(sym),
-  onToggle: () => {
-    saveFeatures(features);
-    featureVersion++;
+const sidebar = new Sidebar(
+  $<HTMLElement>("sidebar"),
+  markets,
+  features,
+  {
+    onSelect: (sym) => selectSymbol(sym),
+    onToggle: (id, on) => {
+      saveFeatures(features);
+      featureVersion++;
+      if (id === "candles" && on) fitToCandles();
+    },
+    onCandleInterval: (m) => {
+      candleMinutes = m;
+      saveJson(CANDLE_KEY, { minutes: m });
+      featureVersion++;
+      fitToCandles();
+    },
+    onCycle: (c) => {
+      cycleChoice = c;
+      saveJson(CYCLE_KEY, c);
+    },
   },
-});
+  candleMinutes,
+  cycleChoice,
+);
 setInterval(() => sidebar.update(Date.now()), 500);
 
 function setBadge(id: string, text: string, cls: string): void {
@@ -168,6 +216,7 @@ function selectSymbol(sym: string): void {
   inst = null;
   store = null;
   range = null;
+  candles.clear();
   viewInitialized = false;
   view = { ...view, offset: 0, autoCenter: true };
   dataVersion++;
@@ -228,7 +277,17 @@ const conn = connect(
       markets.apply(f);
     },
     onChart(f) {
-      if (!store || !hello || f.sym !== currentSymbol) return;
+      if (f.sym !== currentSymbol) return;
+      if (f.t === "kh" || f.t === "k") {
+        if (f.t === "kh") candles.setHistory(f.x);
+        else {
+          const [t, o, h, l, c, v] = f.x;
+          candles.upsert({ t, o, h, l, c, v });
+        }
+        dataVersion++;
+        return;
+      }
+      if (!store || !hello) return;
       dataVersion++;
       if (f.t === "col") {
         const values = toFloat32(f.q);
@@ -320,6 +379,7 @@ chartEl.addEventListener(
     if (e.shiftKey || y > ph) {
       view = zoomX(view, 1 / factor);
       saveSettings();
+      if (features.candles && view.autoCenter) fitToCandles();
     } else {
       view = zoomY(view, factor, yToUnit(y, view, ph));
     }
@@ -342,7 +402,7 @@ chartEl.addEventListener("pointermove", (e) => {
     const unitsPerPx = (drag.view.yHi - drag.view.yLo) / ph;
     let v = Math.abs(dy) > 2 ? panY(drag.view, dy * unitsPerPx) : { ...drag.view };
     const offset = Math.round(drag.view.offset + dx / drag.view.colWidth);
-    v = { ...v, offset: Math.min(Math.max(offset, 0), Math.max(store.count - 1, 0)) };
+    v = { ...v, offset: Math.min(Math.max(offset, 0), maxOffset()) };
     if (v.offset > 0) v.autoCenter = false;
     view = v;
   }
@@ -356,8 +416,46 @@ chartEl.addEventListener("pointerleave", () => {
 chartEl.addEventListener("dblclick", goLive);
 $<HTMLButtonElement>("live").addEventListener("click", goLive);
 window.addEventListener("keydown", (e) => {
+  if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
   if (e.key === "c" || e.key === "C") goLive();
+  if (e.key === "f" || e.key === "F") fitToCandles();
 });
+
+/**
+ * Preisbereich an die sichtbaren Kerzen anpassen (mit etwas Rand). Ohne das ragen
+ * Kerzen beim Herauszoomen in der Zeit schnell aus dem Bild, weil der Preisbereich
+ * für die Heatmap (± wenige Promille) gemacht ist.
+ */
+function fitToCandles(): void {
+  if (!store || !inst || !hello || store.count === 0) return;
+  const { pw } = plotSize();
+  const latest = store.ts[store.latest]!;
+  const tEnd = latest + view.offset * hello.interval_ms;
+  const tStart = tEnd - (pw / view.colWidth) * hello.interval_ms;
+  const p = candleMinutes * 60_000;
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (const b of aggregate(candles.all(), candleMinutes)) {
+    if (b.t + p < tStart || b.t > tEnd) continue;
+    lo = Math.min(lo, b.l);
+    hi = Math.max(hi, b.h);
+  }
+  if (!Number.isFinite(lo) || hi <= lo) return;
+  const pad = (hi - lo) * 0.08;
+  const toUnit = (price: number) => price / inst!.tickSize / inst!.bucketTicks;
+  view = { ...view, yLo: toUnit(lo - pad), yHi: toUnit(hi + pad) };
+}
+
+/** Wie weit man zurückscrollen kann: Heatmap-Historie oder – mit Kerzen – deren Historie. */
+function maxOffset(): number {
+  if (!store || store.count === 0) return 0;
+  let cols = store.count - 1;
+  const first = candles.first;
+  if (features.candles && first !== null && hello) {
+    cols = Math.max(cols, Math.floor((store.ts[store.latest]! - first) / hello.interval_ms));
+  }
+  return cols;
+}
 
 /** Fadenkreuz + Tooltip: nur DOM-Updates, kein Neuzeichnen des Plots. */
 function updateHover(): void {
@@ -400,6 +498,7 @@ const vGrid = new VertexBuilder(1024);
 const vBbo = new VertexBuilder(16384);
 const vBubbles = new VertexBuilder(4096);
 const vLiqs = new VertexBuilder(256);
+const vCandles = new RRectBuilder();
 
 function render(): void {
   const { pw, ph } = plotSize();
@@ -423,6 +522,16 @@ function render(): void {
     if (features.grid) {
       buildGrid(p, vGrid);
       prims.draw(PRIM.SOFT_LINE, vGrid.data, vGrid.n, pw, ph, px, LINE.grid.half, LINE.grid.feather);
+    }
+    if (features.candles && hello) {
+      const bars = aggregate(candles.all(), candleMinutes);
+      buildCandles(
+        bars,
+        candleMinutes,
+        { store, view, pw, ph, intervalMs: hello.interval_ms, tickSize: inst.tickSize, bucketTicks: inst.bucketTicks },
+        vCandles,
+      );
+      rrects.draw(vCandles.data, vCandles.n, pw, ph, px);
     }
     if (features.bbo) {
       buildBbo(p, vBbo);

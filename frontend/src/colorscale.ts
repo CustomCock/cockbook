@@ -18,20 +18,20 @@
  */
 
 /**
- * Eigene Palette auf grauem Grund: beginnt exakt bei der Hintergrundfarbe, damit
- * wenig Liquidität weich in den Hintergrund ausläuft statt hart abzusetzen
- * (Grau -> Stahlblau -> Violett -> Magenta -> Orange -> Bernstein -> Hell).
+ * Eigene Palette auf neutral-grauem Grund: beginnt exakt bei der Hintergrundfarbe, damit
+ * wenig Liquidität weich in den Hintergrund ausläuft. Bewusst ohne Blaustich in den
+ * unteren Stufen (Grau -> gedecktes Pflaume -> Violett -> Magenta -> Orange -> Bernstein).
  */
-export const BACKGROUND: [number, number, number] = [46, 50, 57];
+export const BACKGROUND: [number, number, number] = [38, 39, 42];
 
 const STOPS: [number, [number, number, number]][] = [
   [0.0, BACKGROUND],
-  [0.12, [50, 62, 108]],
-  [0.3, [80, 64, 152]],
-  [0.48, [140, 66, 160]],
-  [0.64, [206, 82, 124]],
-  [0.78, [242, 130, 84]],
-  [0.9, [255, 198, 106]],
+  [0.14, [62, 50, 70]],
+  [0.32, [98, 56, 116]],
+  [0.5, [150, 62, 140]],
+  [0.65, [208, 82, 118]],
+  [0.79, [242, 130, 84]],
+  [0.91, [255, 198, 106]],
   [1.0, [255, 247, 224]],
 ];
 
