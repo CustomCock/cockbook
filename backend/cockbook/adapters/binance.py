@@ -90,6 +90,7 @@ from cockbook.core.events import (
     InstrumentInfo,
     Liquidation,
     LongShortRatio,
+    MarketSession,
     MarkPrice,
     OpenInterest,
     PriceLevel,
@@ -303,6 +304,11 @@ def parse_kline_ws(d: dict[str, Any], symbol: str, recv_ns: int) -> Candle:
         ),
         closed=bool(k["x"]),
     )
+
+
+def is_tradfi(symbol_entry: dict[str, Any]) -> bool:
+    """TradFi-Perps (Gold, Silber, Aktien …) laut exchangeInfo ``contractType``."""
+    return str(symbol_entry.get("contractType", "")).upper() == "TRADIFI_PERPETUAL"
 
 
 def parse_instruments(exchange_info: dict[str, Any]) -> dict[str, Instrument]:
@@ -865,6 +871,14 @@ class BinanceUsdmAdapter:
             data, _ = await get_json(session, f"{self.cfg.rest_url}/fapi/v1/exchangeInfo")
             self.inst = inst = parse_instrument(data, self.symbol)
             sym_entry = next(s for s in data["symbols"] if s["symbol"] == self.symbol)
+            tradfi = is_tradfi(sym_entry)
+            reconnect = (
+                self.cfg.reconnect.model_copy(
+                    update={"stale_timeout_s": self.cfg.tradfi_stale_timeout_s}
+                )
+                if tradfi
+                else self.cfg.reconnect
+            )
             now = time.time_ns()
             await self._publish(
                 [
@@ -875,6 +889,7 @@ class BinanceUsdmAdapter:
                         ts_recv_ns=now,
                         tick_size=inst.tick_size,
                         step_size=inst.step_size,
+                        kind="tradfi" if tradfi else "crypto",
                     ),
                 ]
             )
@@ -889,8 +904,6 @@ class BinanceUsdmAdapter:
             sym = self.symbol.lower()
             market_streams = [
                 f"{sym}@aggTrade",
-                f"{sym}@markPrice@1s",
-                f"{sym}@miniTicker",
                 f"{sym}@kline_1m",
             ]
             if not self.cfg.liquidations_all_market:
@@ -902,7 +915,7 @@ class BinanceUsdmAdapter:
                         session,
                         f"{self.cfg.ws_public_url}/stream?streams={depth}",
                         name=f"{self.name}:public",
-                        cfg=self.cfg.reconnect,
+                        cfg=reconnect,
                         stop=self._stop,
                         on_message=self._on_public,
                         on_open=self._on_public_open,
@@ -914,7 +927,7 @@ class BinanceUsdmAdapter:
                         session,
                         f"{self.cfg.ws_market_url}/stream?streams={'/'.join(market_streams)}",
                         name=f"{self.name}:market",
-                        cfg=self.cfg.reconnect,
+                        cfg=reconnect,
                         stop=self._stop,
                         on_message=self._on_market,
                         on_open=lambda: self._on_market_open(session),
@@ -1239,3 +1252,102 @@ class BinanceLiquidationStream:
             events.append(parse_force_order(item, inst, recv_ns))
         for ev in events:
             await self.bus.publish(ev)
+
+
+class BinanceMarketStats:
+    """Kennzahlen für *alle* konfigurierten Coins über eine Verbindung (/market):
+
+    - ``!miniTicker@arr`` – 24h-Statistik, sekündlich, nur geänderte Symbole
+    - ``!markPrice@arr@1s`` – Mark-/Indexpreis + Funding (TradFi kommt laut Doku in
+      eigenen Nachrichten, ist aber dasselbe Format)
+    - ``tradingSession`` – Handelszeiten der TradFi-Märkte (z. B. Rohstoffe)
+
+    Doku (alle drei Streams, inkl. ``st``-Feld nach der CM-Migration):
+    https://developers.binance.com/en/docs/catalog/core-trading-derivatives-trading-usd-s-m-futures/api/ws-streams/market
+    TradFi-Kontrakte: exchangeInfo ``contractType = TRADIFI_PERPETUAL``.
+
+    Beim Start: exchangeInfo prüfen, welche konfigurierten Symbole es gibt, und für jedes
+    ein ``InstrumentInfo`` publizieren – damit kennt das Frontend alle Coins samt
+    Tick-Größe, auch wenn deren Orderbuch (noch) nicht läuft.
+    """
+
+    name = f"{EXCHANGE}:stats"
+
+    def __init__(self, cfg: BinanceUsdmConfig, symbols: list[str], bus: EventBus) -> None:
+        self.cfg = cfg
+        self.wanted = [s.upper() for s in symbols]
+        self.bus = bus
+        self.available: dict[str, Instrument] = {}
+        self.ready = asyncio.Event()
+        self._stop = asyncio.Event()
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    async def run(self) -> None:
+        timeout = aiohttp.ClientTimeout(total=30)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            data, _ = await get_json(session, f"{self.cfg.rest_url}/fapi/v1/exchangeInfo")
+            entries = {s["symbol"]: s for s in data["symbols"]}
+            instruments = parse_instruments(data)
+            now = time.time_ns()
+            for sym in self.wanted:
+                entry = entries.get(sym)
+                if entry is None or sym not in instruments or entry.get("status") != "TRADING":
+                    log.warning(
+                        "symbol not available on Binance USDⓈ-M, skipped",
+                        extra={"symbol": sym, "status": entry.get("status") if entry else None},
+                    )
+                    continue
+                inst = instruments[sym]
+                self.available[sym] = inst
+                await self.bus.publish(
+                    InstrumentInfo(
+                        exchange=EXCHANGE,
+                        symbol=sym,
+                        ts_recv_ns=now,
+                        tick_size=inst.tick_size,
+                        step_size=inst.step_size,
+                        kind="tradfi" if is_tradfi(entry) else "crypto",
+                    )
+                )
+            self.ready.set()
+            log.info(
+                "market stats starting",
+                extra={"available": len(self.available), "configured": len(self.wanted)},
+            )
+            await run_ws(
+                session,
+                f"{self.cfg.ws_market_url}/stream?streams=!miniTicker@arr/!markPrice@arr@1s/tradingSession",
+                name=self.name,
+                cfg=self.cfg.reconnect,
+                stop=self._stop,
+                on_message=self._on_message,
+            )
+
+    async def _on_message(self, text: str, recv_ns: int) -> None:
+        _, data = unwrap_combined(text)
+        items: list[dict[str, Any]] = data if isinstance(data, list) else [data]
+        for d in items:
+            if d.get("st", 1) != 1:  # Coin-margined (CM) überspringen
+                continue
+            etype = d.get("e")
+            sym = d.get("s")
+            ev: Event | None = None
+            if etype == "24hrMiniTicker" and sym in self.available:
+                ev = parse_mini_ticker(d, sym, recv_ns)
+            elif etype == "markPriceUpdate" and sym in self.available:
+                ev = parse_mark_price(d, sym, recv_ns)
+            elif isinstance(etype, str) and etype.endswith("Update") and "S" in d:
+                # tradingSession: EquityUpdate, CommodityUpdate, FXUpdate, …
+                ev = MarketSession(
+                    exchange=EXCHANGE,
+                    symbol=etype.removesuffix("Update").upper(),
+                    ts_exchange_ns=_ms(d.get("E")),
+                    ts_recv_ns=recv_ns,
+                    session=str(d["S"]),
+                    start_ns=_ms(d.get("t")),
+                    end_ns=_ms(d.get("T")),
+                )
+            if ev is not None:
+                await self.bus.publish(ev)

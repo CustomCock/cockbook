@@ -7,7 +7,7 @@
   </head>
   <body>
     <header id="bar">
-      <span id="symbol">–</span>
+      <div id="picker"></div>
       <span id="mode" class="badge">–</span>
       <span id="sync" class="badge off">keine Verbindung</span>
       <label title="Teilt die Obergrenze der Farbskala: mehr Kontrast = mehr Level erreichen die hellste Farbe">
@@ -24,6 +24,7 @@
     <main id="chart">
       <canvas id="gl"></canvas>
       <canvas id="yaxis"></canvas>
+      <canvas id="rsi"></canvas>
       <canvas id="xaxis"></canvas>
       <div id="crossV" class="cross"></div>
       <div id="crossH" class="cross"></div>
@@ -31,7 +32,7 @@
     </main>
     </div>
     <footer id="help">
-      Mausrad: Preis-Zoom · Shift+Mausrad: Zeit-Zoom · Ziehen: verschieben · Doppelklick / C: Live + Auto-Zentrierung · F: Preis an Kerzen anpassen
+      Mausrad: Preis-Zoom · Shift+Mausrad: Zeit-Zoom · Ziehen: verschieben · Doppelklick / C: Live + Auto-Zentrierung · F: Preis an Kerzen anpassen · /: Coin suchen
     </footer>
     <script type="module" src="/src/main.ts"></script>
   </body>

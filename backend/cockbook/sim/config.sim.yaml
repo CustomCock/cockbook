@@ -9,11 +9,16 @@ logging:
 exchanges:
   - name: binance_usdm
     enabled: true
-    symbols:                      # Reihenfolge = Reihenfolge in der Seitenleiste
-      - symbol: BTCUSDT
-      - symbol: ETHUSDT
-      - symbol: SOLUSDT
-      - symbol: XRPUSDT
+    symbols:                      # Reihenfolge = Reihenfolge im Coin-Menü
+      - {symbol: BTCUSDT, always_on: true}
+      - {symbol: ETHUSDT, always_on: true}
+      - {symbol: SOLUSDT, always_on: true}
+      - {symbol: XRPUSDT, always_on: true}
+      - symbol: BNBUSDT
+      - symbol: DOGEUSDT
+      - symbol: HYPEUSDT          # gibt es im Simulator nicht -> wird übersprungen
+      - {symbol: XAUUSDT, label: "Gold (XAU)"}
+      - {symbol: XAGUSDT, label: "Silber (XAG)"}
       # optional fest statt automatisch:  - {symbol: BTCUSDT, bucket_ticks: 5}
     # Simulator statt Binance
     rest_url: http://127.0.0.1:9876
@@ -63,6 +68,7 @@ ui:
 
 history:
   spot_rest_url: http://127.0.0.1:9876
+  futures_rest_url: http://127.0.0.1:9876
 
 recorder:
   data_dir: data/sim # getrennt von echten Aufzeichnungen (gitignored)

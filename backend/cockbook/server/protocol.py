@@ -21,7 +21,11 @@ Kennzahl-Frames (an alle Clients, Seitenleiste zeigt alle Coins):
 ``tv``   {sym, ts, p, buy, sell, ratio}     Taker Buy/Sell-Volumen je Periode p
 ``liq``  {sym, ts, side, price, qty}  einzelne Liquidation (Gesamtmarkt, alle Coins)
 ``d1``   {sym, x: [[t, o, h, l, c, v], …]}  Tageskerzen (Spot) für ATH/Zyklen/YTD
+``sess``  {sym: Markt, ts, session, start, end}  TradFi-Handelszeit (z. B. COMMODITY)
 ``sync`` {sym, ts, synced, resyncs, reason}  Orderbuch-Diagnose je Coin
+
+Langzeit-Heatmap im Symbol-Kanal: ``cc`` = grobe Spalte {t, sym, ts, s, b, q, bb, ba}
+(Buckets = ``long_bucket_factor`` feine Buckets, Mittelwert über ``long_interval_ms``).
 
 Kerzen-Frames im Symbol-Kanal: ``kh`` = 1m-Historie (beim Abo), ``k`` = laufende 1m-Kerze
 {sym, x: [t, o, h, l, c, v, closed]}. 3m/5m/10m baut das Frontend aus 1m.
@@ -47,6 +51,7 @@ from cockbook.core.events import (
     Event,
     Liquidation,
     LongShortRatio,
+    MarketSession,
     MarkPrice,
     OpenInterest,
     Side,
@@ -117,6 +122,34 @@ def encode_column(symbol: str, col: HeatmapColumn) -> list[bytes]:
             )
         )
     return frames
+
+
+def encode_long_column(symbol: str, col: HeatmapColumn) -> bytes:
+    return _pack(
+        {
+            "t": "cc",
+            "sym": symbol,
+            "ts": col.ts_ns // _NS_PER_MS,
+            "s": col.synced,
+            "b": col.base_bucket,
+            "q": _f32_le(col.values),
+            "bb": col.best_bid,
+            "ba": col.best_ask,
+        }
+    )
+
+
+def encode_session(e: MarketSession) -> bytes:
+    return _pack(
+        {
+            "t": "sess",
+            "sym": e.symbol,
+            "ts": _ms(e.ts_ns),
+            "session": e.session,
+            "start": _ms(e.start_ns),
+            "end": _ms(e.end_ns),
+        }
+    )
 
 
 def encode_stat(e: Event) -> tuple[str, bytes] | None:

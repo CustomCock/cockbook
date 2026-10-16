@@ -4,7 +4,8 @@
  */
 
 import type { DailyRow } from "./cycles";
-import type { StatFrame } from "./net";
+import type { StatFrame, SymbolInfo } from "./net";
+import { lastRsi } from "./rsi";
 
 export interface Liq {
   sym: string;
@@ -29,7 +30,11 @@ export interface MarketState {
   /** Tageskerzen (Spot) für ATH, Zyklen, YTD */
   daily?: DailyRow[];
   sync?: Extract<StatFrame, { t: "sync" }>;
+  kind: "crypto" | "tradfi";
+  label: string;
 }
+
+export type Session = Extract<StatFrame, { t: "sess" }>;
 
 /** Obergrenze der vorgehaltenen Liquidationen (Gesamtmarkt kann sehr aktiv sein). */
 const MAX_LIQS = 5000;
@@ -46,12 +51,14 @@ export class Markets {
   /** Neueste zuerst */
   liqs: Liq[] = [];
   private liqKeys = new Set<string>();
+  /** Handelszeiten der TradFi-Märkte, z. B. "COMMODITY" -> REGULAR/NO_TRADING */
+  readonly sessions = new Map<string, Session>();
   version = 0;
 
   ensure(symbol: string, tickSize?: string): MarketState {
     let m = this.bySymbol.get(symbol);
     if (!m) {
-      m = { symbol, tickSize: null, decimals: 2, oiHist: [] };
+      m = { symbol, tickSize: null, decimals: 2, oiHist: [], kind: "crypto", label: symbol.replace(/USDT$/, "") };
       this.bySymbol.set(symbol, m);
     }
     if (tickSize) {
@@ -61,10 +68,20 @@ export class Markets {
     return m;
   }
 
+  setInfo(info: SymbolInfo): void {
+    const m = this.ensure(info.symbol, info.tick_size);
+    if (info.kind) m.kind = info.kind;
+    if (info.label) m.label = info.label;
+  }
+
   apply(f: StatFrame): void {
     this.version++;
     if (f.t === "liq") {
       this.addLiq(f);
+      return;
+    }
+    if (f.t === "sess") {
+      this.sessions.set(f.sym, f);
       return;
     }
     const m = this.ensure(f.sym);
@@ -124,6 +141,20 @@ export class Markets {
   price(symbol: string): number | null {
     const m = this.bySymbol.get(symbol);
     return m?.ticker?.last ?? m?.mark?.mp ?? null;
+  }
+
+  /**
+   * RSI(14) auf Tageskerzen. Die letzte Tageskerze läuft noch: ihr Schlusskurs wird durch
+   * den aktuellen Preis ersetzt. Nur die letzten 300 Tage – die Wilder-Glättung hat
+   * frühere Kerzen bis dahin praktisch vergessen (Gewicht (13/14)^300 ≈ 2e-10).
+   */
+  rsi1d(symbol: string, now = Date.now()): number | null {
+    const d = this.bySymbol.get(symbol)?.daily;
+    if (!d || d.length < 2) return null;
+    const closes = d.slice(-300).map((r) => r[4]);
+    const price = this.price(symbol);
+    if (price !== null && now - d[d.length - 1]![0] < 86_400_000) closes[closes.length - 1] = price;
+    return lastRsi(closes);
   }
 
   /** Veränderung 24h in Prozent. */

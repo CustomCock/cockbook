@@ -18,6 +18,7 @@ import contextlib
 import json
 import logging
 from collections import deque
+from collections.abc import Callable
 
 from aiohttp import WSMsgType, web
 
@@ -30,7 +31,7 @@ Frame = str | bytes  # str = JSON-Steuernachricht, bytes = MessagePack
 
 
 class _Channel:
-    def __init__(self, symbol: str, history: int) -> None:
+    def __init__(self, symbol: str, history: int, long_history: int) -> None:
         self.symbol = symbol
         self.hello: str | None = None
         self.status: str | None = None
@@ -38,6 +39,8 @@ class _Channel:
         self.static: dict[str, bytes] = {}
         # eine Gruppe = alle Frames eines Intervalls
         self.history: deque[list[bytes]] = deque(maxlen=max(history, 1))
+        # Langzeit-Heatmap (grobe Spalten)
+        self.long_history: deque[bytes] = deque(maxlen=max(long_history, 1))
 
 
 class _Client:
@@ -81,6 +84,9 @@ class Bridge:
         # Gesamtmarkt: bei Last mehrere pro Sekunde -> etwas mehr vorhalten
         self._recent_liqs: deque[bytes] = deque(maxlen=300)
         self._runner: web.AppRunner | None = None
+        # Reihenfolge der Symbole (Config) und Hook beim Abo (Orderbuch bei Bedarf starten)
+        self._order: list[str] = []
+        self.on_subscribe: Callable[[str], None] | None = None
 
     @property
     def client_count(self) -> int:
@@ -89,13 +95,22 @@ class Bridge:
     def _channel(self, symbol: str) -> _Channel:
         ch = self._channels.get(symbol)
         if ch is None:
-            ch = self._channels[symbol] = _Channel(symbol, self.cfg.history_columns)
+            ch = self._channels[symbol] = _Channel(
+                symbol, self.cfg.history_columns, self.cfg.long_history_columns
+            )
         return ch
+
+    def set_symbol_order(self, symbols: list[str]) -> None:
+        self._order = list(symbols)
+
+    def _sorted_symbols(self) -> list[str]:
+        rank = {s: i for i, s in enumerate(self._order)}
+        return sorted(self._channels, key=lambda s: rank.get(s, len(rank)))
 
     def _symbols_msg(self) -> str:
         return encode_control(
             "symbols",
-            symbols=[{"symbol": s, **self._symbol_info.get(s, {})} for s in self._channels],
+            symbols=[{"symbol": s, **self._symbol_info.get(s, {})} for s in self._sorted_symbols()],
         )
 
     # --- Daten rein ---------------------------------------------------------------------
@@ -128,6 +143,12 @@ class Bridge:
         for f in frames:
             self._send_channel(symbol, f)
 
+    def publish_long(self, symbol: str, frame: bytes) -> None:
+        """Grobe Langzeit-Spalte: eigene, längere Historie."""
+        if self.cfg.long_history_columns:
+            self._channel(symbol).long_history.append(frame)
+        self._send_channel(symbol, frame)
+
     def set_static(self, symbol: str, key: str, frame: bytes) -> None:
         """Ersetzt einen Zustand des Symbols und schickt ihn an aktuelle Abonnenten."""
         self._channel(symbol).static[key] = frame
@@ -159,6 +180,8 @@ class Bridge:
             client.put(frame)
 
     def _subscribe(self, client: _Client, symbol: str) -> None:
+        if self.on_subscribe is not None:
+            self.on_subscribe(symbol)
         ch = self._channels.get(symbol)
         if ch is None:
             client.put(encode_control("error", message=f"unbekanntes Symbol {symbol}"))
@@ -171,6 +194,8 @@ class Bridge:
             client.put(ch.status)
         for frame in ch.static.values():
             client.put(frame)
+        for frame in ch.long_history:
+            client.put(frame)
         for group in ch.history:
             for f in group:
                 client.put(f)
@@ -180,11 +205,16 @@ class Bridge:
     async def _handle(self, request: web.Request) -> web.WebSocketResponse:
         ws = web.WebSocketResponse(heartbeat=20, max_msg_size=1 << 20)
         await ws.prepare(request)
-        maxsize = self.cfg.client_queue_frames + self.cfg.history_columns * 4 + 1000
+        maxsize = (
+            self.cfg.client_queue_frames
+            + self.cfg.history_columns * 4
+            + self.cfg.long_history_columns
+            + 1000
+        )
         client = _Client(ws, maxsize)
         self._send_base_state(client)
         if self._channels:
-            self._subscribe(client, next(iter(self._channels)))
+            self._subscribe(client, self._sorted_symbols()[0])
         self._clients.add(client)
         log.info(
             "frontend connected", extra={"peer": request.remote, "clients": len(self._clients)}

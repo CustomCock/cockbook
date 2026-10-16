@@ -23,7 +23,7 @@ async def run(cfg: AppConfig) -> None:
     install_stop_signals(stop)
     async with EventBus() as bus:
         recorder = Recorder(cfg.recorder, bus)
-        sources = build_sources(cfg, bus)
+        sources = build_sources(cfg, bus, always_on_only=True)
         # Reihenfolge beim Beenden: erst alle Quellen (die noch Abmelde-Metadaten
         # publizieren), danach den Recorder, damit sein letzter Flush alles enthält.
         recorder_stop = asyncio.Event()

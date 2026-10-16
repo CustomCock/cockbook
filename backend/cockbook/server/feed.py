@@ -13,7 +13,7 @@ import logging
 import time
 
 from cockbook.config import AggregationConfig, AppConfig, UiConfig
-from cockbook.core.aggregation import HeatmapAggregator
+from cockbook.core.aggregation import HeatmapAggregator, LongTermAccumulator
 from cockbook.core.eventbus import EventBus, Overflow
 from cockbook.core.events import (
     BookDelta,
@@ -26,6 +26,7 @@ from cockbook.core.events import (
     InstrumentInfo,
     Liquidation,
     LongShortRatio,
+    MarketSession,
     MarkPrice,
     OpenInterest,
     TakerVolume,
@@ -39,6 +40,8 @@ from cockbook.server.protocol import (
     encode_control,
     encode_liquidation,
     encode_live_candle,
+    encode_long_column,
+    encode_session,
     encode_stat,
     encode_sync,
 )
@@ -62,6 +65,7 @@ _STAT_EVENTS: tuple[type[Event], ...] = (
     OpenInterest,
     LongShortRatio,
     TakerVolume,
+    MarketSession,
 )
 
 
@@ -75,8 +79,14 @@ class MarketFeed:
         bridge: Bridge,
         *,
         mode: str = "live",
+        labels: dict[str, str] | None = None,
     ) -> None:
-        """``symbols``: Symbol -> feste Bucket-Größe in Ticks oder None (automatisch)."""
+        """``symbols``: Symbol -> feste Bucket-Größe in Ticks oder None (automatisch).
+
+        Symbole erscheinen im Frontend erst mit ihrem ``InstrumentInfo`` – ein Coin, den
+        es an der Börse nicht (mehr) gibt, taucht so gar nicht erst in der Liste auf.
+        """
+        self.labels = labels or {}
         self.cfg = agg_cfg
         self.ui = ui_cfg
         self.bus = bus
@@ -94,8 +104,7 @@ class MarketFeed:
         self._candles: dict[str, dict[int, CandleBar]] = {sym: {} for sym in symbols}
         self._candle_dirty: dict[str, tuple[CandleBar, bool]] = {}
         self._resyncs: dict[str, int] = dict.fromkeys(symbols, 0)
-        for sym in symbols:
-            bridge.register_symbol(sym)
+        self._long = {sym: LongTermAccumulator(agg_cfg.long_bucket_factor) for sym in symbols}
         # Messwerte für die Performance-Auswertung
         self.columns = 0
         self.build_ns_total = 0
@@ -104,11 +113,14 @@ class MarketFeed:
     @classmethod
     def from_config(cls, cfg: AppConfig, bus: EventBus, bridge: Bridge) -> MarketFeed:
         symbols: dict[str, int | None] = {}
+        labels: dict[str, str] = {}
         for ex in cfg.exchanges:
             if ex.enabled:
                 for s in ex.symbols:
                     symbols[s.symbol.upper()] = s.bucket_ticks
-        return cls(symbols, cfg.aggregation, cfg.ui, bus, bridge)
+                    if s.label:
+                        labels[s.symbol.upper()] = s.label
+        return cls(symbols, cfg.aggregation, cfg.ui, bus, bridge, labels=labels)
 
     async def _on_chart_event(self, e: Event) -> None:
         if isinstance(e, Liquidation):
@@ -133,7 +145,13 @@ class MarketFeed:
             return
         agg.on_event(e)
         if isinstance(e, InstrumentInfo):
-            self.bridge.register_symbol(e.symbol, exchange=e.exchange, tick_size=str(e.tick_size))
+            self.bridge.register_symbol(
+                e.symbol,
+                exchange=e.exchange,
+                tick_size=str(e.tick_size),
+                kind=e.kind,
+                label=self.labels.get(e.symbol, e.symbol.removesuffix("USDT")),
+            )
         elif isinstance(e, BookSyncStatus):
             if not e.synced:
                 self._resyncs[e.symbol] += 1
@@ -163,6 +181,9 @@ class MarketFeed:
         self._candle_dirty.clear()
 
     async def _on_stat_event(self, e: Event) -> None:
+        if isinstance(e, MarketSession):  # gilt für einen ganzen Markt, nicht ein Symbol
+            self.bridge.publish_stat(e.symbol, "sess", encode_session(e))
+            return
         if e.symbol not in self.aggs:
             return
         encoded = encode_stat(e)
@@ -182,6 +203,8 @@ class MarketFeed:
                 tick_size=str(agg.instrument.tick_size),
                 bucket_ticks=agg.bucket_ticks,
                 interval_ms=self.cfg.interval_ms,
+                long_interval_ms=self.cfg.long_interval_ms,
+                long_bucket_factor=self.cfg.long_bucket_factor,
                 half_range_buckets=self.cfg.half_range_buckets,
                 ui=self.ui.model_dump(),
             ),
@@ -204,6 +227,7 @@ class MarketFeed:
                 overflow=Overflow.DROP_OLDEST,
             )
         interval_ns = self.cfg.interval_ms * 1_000_000
+        long_ns = self.cfg.long_interval_ms * 1_000_000
         last_log = time.monotonic()
         while not stop.is_set():
             # Auf Vielfache des Intervalls ausrichten: Spalten-Zeitstempel sind dann über
@@ -223,9 +247,14 @@ class MarketFeed:
                 if sym not in self._hello_sent:
                     self._send_hello(sym, agg)
                 t0 = time.perf_counter_ns()
-                frames = encode_column(sym, agg.make_column(boundary))
+                col = agg.make_column(boundary)
+                frames = encode_column(sym, col)
+                long_acc = self._long[sym]
+                long_acc.add(col)
                 dt = time.perf_counter_ns() - t0
                 self.bridge.publish(sym, frames)
+                if boundary % long_ns == 0:
+                    self.bridge.publish_long(sym, encode_long_column(sym, long_acc.take(boundary)))
                 self.columns += 1
                 self.build_ns_total += dt
                 self.build_ns_max = max(self.build_ns_max, dt)

@@ -1,7 +1,8 @@
 # CockBook
 
-> **Status: Work in Progress** – Liquidity-Heatmap mit Trades (WebGL) für BTC, ETH, SOL und XRP
-> (Binance USDⓈ-M), Seitenleiste mit Derivate-Kennzahlen. DOM, CVD, Alerts, Replay usw. folgen.
+> **Status: Work in Progress** – Liquidity-Heatmap (live + Langzeit) mit Trades, Kerzen und RSI (WebGL)
+> für die Top-20-Coins sowie Gold und Silber (Binance USDⓈ-M), Seitenleiste mit Derivate-Kennzahlen.
+> DOM, CVD, Alerts, Replay usw. folgen.
 
 Freies, lokal laufendes Orderflow- & Liquidity-Heatmap-Tool für Krypto-Märkte, inspiriert von Bookmap.
 Es nutzt ausschließlich öffentliche, kostenlose Börsen-Datenfeeds und läuft unter Ubuntu und Windows.
@@ -54,22 +55,37 @@ make dev       # Backend + Frontend-Dev-Server (http://127.0.0.1:5173)
 make dev       # Binance-Livedaten -> Backend (ws://127.0.0.1:8765) + Frontend http://127.0.0.1:5173
 ```
 
-Coins werden in `config.yaml` unter `symbols` eingetragen (Standard: BTCUSDT, ETHUSDT, SOLUSDT,
-XRPUSDT) und links in der Seitenleiste gewählt. Die Seitenleiste enthält außerdem alle Funktionen
-zum Ein-/Ausschalten (gelten für alle Coins):
+Coins werden oben links im **Dropdown** gewählt (Klick oder Taste `/`, Tippen filtert, ↑/↓ + Enter).
+Die Liste zeigt je Coin Preis, 24h, Veränderung seit 1. Januar, RSI auf Tageskerzen und den
+Orderbuch-Status (Punkt); Gold und Silber stehen unter „Rohstoffe (TradFi)“ mit ihrer Handelszeit.
+Die Coins stehen in `config.yaml` unter `symbols` (Standard: Top 20 nach Marktkapitalisierung ohne
+Stablecoins, dazu XAUUSDT und XAGUSDT). Symbole, die es auf Binance USDⓈ-M nicht gibt, werden mit
+einer Warnung übersprungen.
 
-- **Coins:** Preis, 24h, Veränderung seit 1. Januar, Sync-Status des Orderbuchs (Punkt)
-- **Chart:** Liquidity-Heatmap, Weich zeichnen, Trade-Bubbles, Best Bid/Ask, Liquidationen, Preisgitter,
-  Kerzen (1m/3m/5m/10m)
+Kennzahlen (Preis, 24h, Funding …) kommen für alle Coins über Gesamtmarkt-Streams. Das **Orderbuch**
+(Heatmap) läuft ab Start nur für Coins mit `always_on: true` (Standard: BTC, ETH, XRP, SOL); jeder andere
+Coin startet beim ersten Auswählen und läuft dann weiter – die Heatmap beginnt also erst ab diesem
+Moment. Gold und Silber sind TradFi-Kontrakte mit Handelspausen (z. B. am Wochenende); in einer Pause
+kommen keine Orderbuch-Updates.
+
+Die Seitenleiste enthält alle Funktionen zum Ein-/Ausschalten (gelten für alle Coins):
+
+- **Chart:** Liquidity-Heatmap, Langzeit-Heatmap, Weich zeichnen, Trade-Bubbles, Best Bid/Ask,
+  Liquidationen, Preisgitter, Kerzen (1m/3m/5m/10m), RSI-Fenster unter dem Chart
+- **Langzeit-Heatmap:** ältere Liquidität (bis 2 h) als gröbere Ebene unter der Live-Heatmap
+  (Mittel über 2 s und je 2 Preis-Stufen) – sichtbar beim Herauszoomen in der Zeit (Shift+Mausrad)
+  oder Zurückziehen. Die Live-Heatmap hat volle Auflösung für die letzten 5 min.
 - **ATH & Zyklen:** Allzeithoch, Abstand, Tage seit ATH, 52-Wochen-Spanne; Marktzyklus (Halving-Zyklen
   oder eigener Zeitraum) mit Länge, Fortschritt, Zyklus-Hoch/-Tief und Performance
+- **Indikatoren:** RSI(14) nach Wilder für 1m, 5m, 15m, 1h und 1D; im RSI-Fenster im Intervall der Kerzen
 - **Derivate:** Mark-/Indexpreis, Funding Rate (mit Countdown), Open Interest (Δ 5 min / 1 h),
   Longs vs Shorts, Taker Buy/Sell, 24h-Statistik, Liquidationen des Gesamtmarkts (sekündlich)
-- **Geplant:** Liquidation Heatmap, Funding-Heatmap, RSI-Heatmap, Depth Delta, Multi-Börsen-Orderbuch …
+- **Geplant:** Liquidation Heatmap, Funding-Heatmap, RSI-Heatmap aller Coins, Depth Delta,
+  Multi-Börsen-Orderbuch …
 
 Bedienung: Mausrad = Preis-Zoom, Shift+Mausrad (oder Mausrad über der Zeitachse) = Zeit-Zoom,
 Ziehen = verschieben (auch zurück in der Zeit), Doppelklick oder `C` = zurück zu Live mit
-Auto-Zentrierung, `F` = Preisbereich an die sichtbaren Kerzen anpassen. Regler „Kontrast“ und „Schwelle“ steuern die Farbskala; Einstellungen werden
+Auto-Zentrierung, `F` = Preisbereich an die sichtbaren Kerzen anpassen, `/` = Coin suchen. Regler „Kontrast“ und „Schwelle“ steuern die Farbskala; Einstellungen werden
 im Browser gespeichert.
 
 Ohne GPU (z. B. in einer VM) rendert der Browser per Software. CockBook erkennt das und
@@ -80,7 +96,7 @@ Override per URL: `?scale=1`.
 
 ```bash
 make book      # Top-10 Bid/Ask live im Terminal (python -m cockbook.debug_book)
-make record    # nur aufzeichnen -> data/<exchange>/<symbol>/YYYY-MM-DDTHH.jsonl.zst
+make record    # nur aufzeichnen (Coins mit always_on) -> data/<exchange>/<symbol>/YYYY-MM-DDTHH.jsonl.zst
 ```
 
 Hinweis: Binance sperrt den Zugriff aus bestimmten Ländern (HTTP 451, „restricted location“).

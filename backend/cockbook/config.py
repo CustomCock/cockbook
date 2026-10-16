@@ -28,6 +28,11 @@ class SymbolConfig(_Model):
     symbol: Annotated[str, Field(min_length=1)]
     # Optional fest: Preis-Bucket in Ticks. Sonst automatisch aus aggregation.bucket_bps.
     bucket_ticks: Annotated[int, Field(gt=0)] | None = None
+    # Orderbuch + Heatmap ab Start. Sonst erst, wenn der Coin im Frontend gewählt wird
+    # (Kennzahlen wie Preis/Funding gibt es für alle Coins immer).
+    always_on: bool = False
+    # Anzeigename, z. B. "SHIB (x1000)"; Standard: Symbol ohne USDT
+    label: str | None = None
 
 
 class MetricsConfig(_Model):
@@ -84,6 +89,9 @@ class BinanceUsdmConfig(_Model):
     liquidations_all_market: bool = True
     # 1m-Kerzen-Historie beim Start (max. 1500 = 25 h; Gewicht 10 je Symbol)
     candles_1m_history: Annotated[int, Field(ge=1, le=1500)] = 1500
+    # TradFi-Kontrakte (Gold, Silber, …) haben Handelspausen: dann kommen minutenlang keine
+    # Orderbuch-Updates. Längere Frist, sonst würde ständig neu verbunden.
+    tradfi_stale_timeout_s: Annotated[float, Field(gt=0)] = 900.0
     validation: BookValidationConfig = Field(default_factory=BookValidationConfig)
     metrics: MetricsConfig = Field(default_factory=MetricsConfig)
     reconnect: ReconnectConfig = Field(default_factory=ReconnectConfig)
@@ -94,6 +102,10 @@ type ExchangeConfig = BinanceUsdmConfig
 
 class AggregationConfig(_Model):
     interval_ms: Annotated[int, Field(ge=10)] = 100  # eine Heatmap-Spalte
+    # Langzeit-Heatmap: gröbere Spalten (Mittelwert über die Zeit) für weites Herauszoomen
+    long_interval_ms: Annotated[int, Field(ge=200)] = 2000
+    # Langzeit: je n Preis-Buckets zusammengefasst (Mittelwert) -> doppelter Preisbereich
+    long_bucket_factor: Annotated[int, Field(ge=1, le=8)] = 2
     # Preis-Bucket automatisch je Symbol: Bucket ~ Mid * bucket_bps / 10000, auf ein
     # "rundes" Vielfaches der Tick-Größe gerundet (1, 2, 5, 10, 20, …), mindestens 1 Tick.
     # Damit sehen BTC (Tick 0.10) und XRP (Tick 0.0001) gleich "dicht" aus.
@@ -107,6 +119,8 @@ class ServerConfig(_Model):
     port: Annotated[int, Field(gt=0, lt=65536)] = 8765
     # So viele Spalten bekommt ein neu verbundener Client als Historie (100 ms -> 5 min)
     history_columns: Annotated[int, Field(ge=0)] = 3000
+    # Langzeit-Heatmap-Historie (2 s -> 3600 = 2 h)
+    long_history_columns: Annotated[int, Field(ge=0)] = 3600
     # Sendepuffer je Client; ein langsamer Client verliert die ältesten Frames
     client_queue_frames: Annotated[int, Field(gt=0)] = 2000
 
@@ -135,6 +149,8 @@ class HistoryConfig(_Model):
 
     enabled: bool = True
     spot_rest_url: str = "https://data-api.binance.vision"
+    # Ersatz für Symbole ohne Spot-Markt (Gold/Silber als TradFi-Perps)
+    futures_rest_url: str = "https://fapi.binance.com"
     start: str = "2017-01-01"  # frühestes Datum; Binance-Spot beginnt im August 2017
     refresh_s: Annotated[float, Field(ge=60)] = 3600.0
 

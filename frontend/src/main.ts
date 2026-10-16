@@ -2,9 +2,11 @@ import "./style.css";
 import { AXIS_H, AXIS_W, drawPriceAxis, drawTimeAxis, formatPrice, gridStepTicks, timeLabel, type Instrument } from "./axes";
 import { aggregate, buildCandles, CandleSeries, RRectBuilder, type CandleMinutes } from "./candles";
 import { computeRange, type ScaleRange, type ScaleSettings } from "./colorscale";
+import { CoinPicker } from "./coinpicker";
 import { CYCLE_PRESETS } from "./cycles";
 import { loadFeatures, saveFeatures } from "./features";
 import { HeatmapRenderer, PRIM, PrimRenderer, RRectRenderer } from "./gl";
+import { coarseColAt, coarseView, type LongParams } from "./longterm";
 import { Markets, decimalsOf } from "./markets";
 import { connect, toFloat32, type Hello } from "./net";
 import {
@@ -17,6 +19,7 @@ import {
   VertexBuilder,
   type SceneParams,
 } from "./scene";
+import { drawRsiPane, RSI_PANE_H } from "./rsipane";
 import { Sidebar, type CycleChoice } from "./sidebar";
 import { HeatmapStore, rowsFor, type TradeBin } from "./store";
 import { panY, priceUnit, recenter, visibleCols, xToCol, yToUnit, zoomX, zoomY, type View } from "./viewport";
@@ -33,6 +36,7 @@ const chartEl = $<HTMLElement>("chart");
 const glCanvas = $<HTMLCanvasElement>("gl");
 const yAxisCanvas = $<HTMLCanvasElement>("yaxis");
 const xAxisCanvas = $<HTMLCanvasElement>("xaxis");
+const rsiCanvas = $<HTMLCanvasElement>("rsi");
 const crossV = $<HTMLElement>("crossV");
 const crossH = $<HTMLElement>("crossH");
 const tooltipEl = $<HTMLElement>("tooltip");
@@ -41,6 +45,8 @@ const thresholdEl = $<HTMLInputElement>("threshold");
 const perfEl = $<HTMLElement>("perf");
 
 const heatmap = new HeatmapRenderer(glCanvas);
+// Langzeit-Ebene: zweiter Renderer auf demselben Canvas/Kontext (eigene Textur)
+const heatmapLong = new HeatmapRenderer(glCanvas);
 const prims = new PrimRenderer(heatmap.gl);
 const rrects = new RRectRenderer(heatmap.gl);
 const params = new URLSearchParams(location.search);
@@ -65,6 +71,8 @@ try {
 let hello: Hello | null = null;
 let inst: Instrument | null = null;
 let store: HeatmapStore | null = null;
+/** Langzeit-Heatmap (grobe Spalten) */
+let coarse: HeatmapStore | null = null;
 let view: View = { yLo: 0, yHi: 100, colWidth: 2, offset: 0, autoCenter: true };
 let viewInitialized = false;
 let range: ScaleRange | null = null;
@@ -140,10 +148,42 @@ function scaleSettings(): ScaleSettings {
   return { contrast: Math.pow(2, Number(contrastEl.value)), threshold: Number(thresholdEl.value) };
 }
 
+/** Parameter der Langzeit-Heatmap aus dem hello (ältere Backends: keine). */
+function longParams(): LongParams | null {
+  if (!hello?.long_interval_ms || !hello.long_bucket_factor) return null;
+  return {
+    fineIntervalMs: hello.interval_ms,
+    longIntervalMs: hello.long_interval_ms,
+    factor: hello.long_bucket_factor,
+  };
+}
+
+/** Zeit der neuesten feinen Spalte = x-Bezug aller Ebenen (ohne feine: neueste grobe). */
+function latestTs(): number | null {
+  if (store && store.count) return store.ts[store.latest]!;
+  if (coarse && coarse.count) return coarse.ts[coarse.latest]!;
+  return null;
+}
+
+/** Sicht der Langzeit-Ebene (null = aus oder keine Daten). */
+function longView(): { v: View; lp: LongParams; c: HeatmapStore } | null {
+  const lp = longParams();
+  if (!features.longterm || !lp || !coarse || coarse.count === 0) return null;
+  const fineLatest = store && store.count ? store.ts[store.latest]! : null;
+  return { v: coarseView(view, fineLatest, coarse.ts[coarse.latest]!, lp), lp, c: coarse };
+}
+
 // --- Layout ------------------------------------------------------------------------------
 
+function rsiHeight(): number {
+  return features.rsi ? RSI_PANE_H : 0;
+}
+
 function plotSize(): { pw: number; ph: number } {
-  return { pw: Math.max(1, chartEl.clientWidth - AXIS_W), ph: Math.max(1, chartEl.clientHeight - AXIS_H) };
+  return {
+    pw: Math.max(1, chartEl.clientWidth - AXIS_W),
+    ph: Math.max(1, chartEl.clientHeight - AXIS_H - rsiHeight()),
+  };
 }
 
 function place(c: HTMLCanvasElement, x: number, y: number, w: number, h: number, scale: number): void {
@@ -159,9 +199,12 @@ function resize(): void {
   dpr = window.devicePixelRatio || 1;
   const { pw, ph } = plotSize();
   place(glCanvas, 0, 0, pw, ph, dpr * renderScale);
-  place(yAxisCanvas, pw, 0, AXIS_W, ph + AXIS_H, dpr);
-  place(xAxisCanvas, 0, ph, pw, AXIS_H, dpr);
-  crossV.style.height = `${ph}px`;
+  const rh = rsiHeight();
+  place(yAxisCanvas, pw, 0, AXIS_W, ph, dpr);
+  rsiCanvas.style.display = rh ? "block" : "none";
+  if (rh) place(rsiCanvas, 0, ph, pw + AXIS_W, rh, dpr);
+  place(xAxisCanvas, 0, ph + rh, pw, AXIS_H, dpr);
+  crossV.style.height = `${ph + rh}px`;
   crossH.style.width = `${pw}px`;
   sizeVersion++;
 }
@@ -175,11 +218,12 @@ const sidebar = new Sidebar(
   markets,
   features,
   {
-    onSelect: (sym) => selectSymbol(sym),
+    candles1m: () => candles.all(),
     onToggle: (id, on) => {
       saveFeatures(features);
       featureVersion++;
       if (id === "candles" && on) fitToCandles();
+      if (id === "rsi") resize();
     },
     onCandleInterval: (m) => {
       candleMinutes = m;
@@ -195,7 +239,12 @@ const sidebar = new Sidebar(
   candleMinutes,
   cycleChoice,
 );
-setInterval(() => sidebar.update(Date.now()), 500);
+const picker = new CoinPicker($<HTMLElement>("picker"), markets, (sym) => selectSymbol(sym));
+setInterval(() => {
+  const now = Date.now();
+  sidebar.update(now);
+  picker.update(now);
+}, 500);
 
 function setBadge(id: string, text: string, cls: string): void {
   const el = $<HTMLElement>(id);
@@ -215,13 +264,14 @@ function selectSymbol(sym: string): void {
   hello = null;
   inst = null;
   store = null;
+  coarse = null;
   range = null;
   candles.clear();
   viewInitialized = false;
   view = { ...view, offset: 0, autoCenter: true };
   dataVersion++;
   sidebar.setActive(sym);
-  $<HTMLElement>("symbol").textContent = sym;
+  picker.setActive(sym);
   setBadge("sync", "lade …", "");
   conn.subscribe(sym);
 }
@@ -235,20 +285,25 @@ const conn = connect(
       if (!ok) setBadge("sync", "keine Verbindung", "off");
     },
     onSymbols(s) {
-      for (const info of s.symbols) markets.ensure(info.symbol, info.tick_size);
+      for (const info of s.symbols) markets.setInfo(info);
       const list = s.symbols.map((x) => x.symbol);
-      sidebar.setSymbols(list);
+      picker.setSymbols(list);
       if (!currentSymbol || !list.includes(currentSymbol)) {
         if (list[0]) selectSymbol(list[0]);
       } else {
         sidebar.setActive(currentSymbol);
+        picker.setActive(currentSymbol);
       }
     },
     onHello(h) {
       if (currentSymbol && h.symbol !== currentSymbol) return; // verspätet, altes Symbol
       currentSymbol = h.symbol;
       const key = (x: Hello | null) =>
-        x && [x.exchange, x.symbol, x.tick_size, x.bucket_ticks, x.interval_ms, x.half_range_buckets].join("|");
+        x &&
+        [
+          x.exchange, x.symbol, x.tick_size, x.bucket_ticks, x.interval_ms, x.half_range_buckets,
+          x.long_interval_ms, x.long_bucket_factor,
+        ].join("|");
       const changed = key(h) !== key(hello);
       hello = h;
       inst = {
@@ -258,13 +313,21 @@ const conn = connect(
         bucketTicks: h.bucket_ticks,
       };
       markets.ensure(h.symbol, h.tick_size);
-      $<HTMLElement>("symbol").textContent = `${h.exchange} · ${h.symbol}`;
       setBadge("mode", h.mode.toUpperCase(), h.mode);
       sidebar.setActive(h.symbol);
+      picker.setActive(h.symbol);
       if (changed || !store) {
         const maxTex = heatmap.maxTextureSize;
         store = new HeatmapStore(Math.min(MAX_HISTORY_COLS, maxTex), rowsFor(h.half_range_buckets, maxTex));
         heatmap.attach(store);
+        const lp = longParams();
+        if (lp) {
+          coarse = new HeatmapStore(
+            Math.min(MAX_HISTORY_COLS, maxTex),
+            rowsFor(Math.ceil(h.half_range_buckets / lp.factor) + 2, maxTex),
+          );
+          heatmapLong.attach(coarse);
+        } else coarse = null;
         viewInitialized = false;
         range = null;
       }
@@ -289,6 +352,10 @@ const conn = connect(
       }
       if (!store || !hello) return;
       dataVersion++;
+      if (f.t === "cc") {
+        if (coarse && coarse.pushColumn(f.ts, f.s, f.b, toFloat32(f.q)) >= 0) coarse.setBbo(f.ts, f.bb, f.ba);
+        return;
+      }
       if (f.t === "col") {
         const values = toFloat32(f.q);
         if (store.pushColumn(f.ts, f.s, f.b, values) < 0) return; // schon vorhanden
@@ -300,7 +367,7 @@ const conn = connect(
           viewInitialized = true;
         }
         // Beim Zurückscrollen bleibt der betrachtete Zeitpunkt stehen
-        if (view.offset > 0) view = { ...view, offset: Math.min(view.offset + 1, store.count - 1) };
+        if (view.offset > 0) view = { ...view, offset: Math.min(view.offset + 1, maxOffset()) };
       } else if (f.t === "bbo") {
         store.setBbo(f.ts, f.bb, f.ba);
         if (view.autoCenter && view.offset === 0 && f.bb !== null && f.ba !== null) {
@@ -324,22 +391,33 @@ const conn = connect(
 
 // --- Farbskala (alle 500 ms aus dem sichtbaren Bereich) -----------------------------------
 
-function updateRange(): void {
-  if (!store || store.count === 0) return;
-  const { pw } = plotSize();
-  const n = Math.min(visibleCols(view, pw), store.count - view.offset);
+/** Stichprobe der sichtbaren Werte einer Ebene (max. ~200 x 200). */
+function sampleVisible(s: HeatmapStore, v: View, pw: number, out: number[]): void {
+  const k0 = Math.max(0, Math.floor(v.offset));
+  const n = Math.min(visibleCols(v, pw), s.count - k0);
+  if (n <= 0) return;
   const colStride = Math.max(1, Math.floor(n / 200));
-  const r0 = Math.max(0, Math.floor(view.yLo) - store.origin);
-  const r1 = Math.min(store.rows, Math.ceil(view.yHi) - store.origin);
+  const r0 = Math.max(0, Math.floor(v.yLo) - s.origin);
+  const r1 = Math.min(s.rows, Math.ceil(v.yHi) - s.origin);
   const rowStride = Math.max(1, Math.floor((r1 - r0) / 200));
-  const out: number[] = [];
-  for (let k = view.offset; k < view.offset + n; k += colStride) {
-    const base = store.indexAgo(k) * store.rows;
+  for (let k = k0; k < k0 + n; k += colStride) {
+    const base = s.indexAgo(k) * s.rows;
     for (let r = r0; r < r1; r += rowStride) {
-      const v = store.data[base + r]!;
-      if (v > 0) out.push(v);
+      const x = s.data[base + r]!;
+      if (x > 0) out.push(x);
     }
   }
+}
+
+function updateRange(): void {
+  const { pw } = plotSize();
+  const out: number[] = [];
+  if (store && store.count) sampleVisible(store, view, pw, out);
+  // Herausgezoomt/zurückgescrollt: Farbskala auch aus der Langzeit-Ebene, sonst wäre sie
+  // ohne feine Daten im Bild unbestimmt
+  const lv = longView();
+  if (lv) sampleVisible(lv.c, lv.v, pw, out);
+  if (!out.length) return;
   range = computeRange(Float32Array.from(out), scaleSettings()) ?? range;
 }
 setInterval(updateRange, 500);
@@ -448,11 +526,16 @@ function fitToCandles(): void {
 
 /** Wie weit man zurückscrollen kann: Heatmap-Historie oder – mit Kerzen – deren Historie. */
 function maxOffset(): number {
-  if (!store || store.count === 0) return 0;
+  if (!store || store.count === 0 || !hello) return 0;
+  const latest = store.ts[store.latest]!;
   let cols = store.count - 1;
   const first = candles.first;
-  if (features.candles && first !== null && hello) {
-    cols = Math.max(cols, Math.floor((store.ts[store.latest]! - first) / hello.interval_ms));
+  if (features.candles && first !== null) {
+    cols = Math.max(cols, Math.floor((latest - first) / hello.interval_ms));
+  }
+  if (features.longterm && coarse && coarse.count) {
+    const oldest = coarse.ts[coarse.indexAgo(coarse.count - 1)]!;
+    cols = Math.max(cols, Math.floor((latest - oldest) / hello.interval_ms));
   }
   return cols;
 }
@@ -465,25 +548,34 @@ function updateHover(): void {
   if (!inside || !mouse) return;
   crossV.style.transform = `translate(${Math.round(mouse.x)}px, 0)`;
   crossH.style.transform = `translate(0, ${Math.round(mouse.y)}px)`;
-  if (!store || !inst || store.count === 0) {
+  const latest = latestTs();
+  if (!store || !inst || !hello || latest === null) {
     tooltipEl.style.display = "none";
     return;
   }
   const k = xToCol(mouse.x, view, pw);
-  if (k >= store.count) {
+  const unit = yToUnit(mouse.y, view, ph);
+  const fmtQty = (q: number) => q.toLocaleString("de-DE", { maximumFractionDigits: 3 });
+  const priceRange = (lo: number, n: number) =>
+    n === 1 ? formatPrice(lo, inst!) : `${formatPrice(lo, inst!)} – ${formatPrice(lo + n - 1, inst!)}`;
+  const lines: string[] = [];
+  const lv = longView();
+  if (k < store.count) {
+    const bucket = Math.floor(unit);
+    lines.push(priceRange(bucket * inst.bucketTicks, inst.bucketTicks), `Liquidität: ${fmtQty(store.valueAt(k, bucket))}`);
+  } else if (lv) {
+    // Vor der feinen Historie: Wert der Langzeit-Ebene (Mittel über Zeit und Preis-Stufen)
+    const j = coarseColAt(k, latest, lv.c.ts[lv.c.latest]!, lv.lp);
+    const cb = Math.floor(unit / lv.lp.factor);
+    const n = inst.bucketTicks * lv.lp.factor;
+    const secs = lv.lp.longIntervalMs / 1000;
+    lines.push(priceRange(cb * n, n), `Liquidität Ø ${secs} s: ${fmtQty(lv.c.valueAt(j, cb))}`);
+  } else {
     tooltipEl.style.display = "none";
     return;
   }
-  const bucket = Math.floor(yToUnit(mouse.y, view, ph));
-  const qty = store.valueAt(k, bucket);
-  const lo = bucket * inst.bucketTicks;
-  const hi = lo + inst.bucketTicks - 1;
-  const price = inst.bucketTicks === 1 ? formatPrice(lo, inst) : `${formatPrice(lo, inst)} – ${formatPrice(hi, inst)}`;
-  tooltipEl.textContent = [
-    price,
-    `Liquidität: ${qty.toLocaleString("de-DE", { maximumFractionDigits: 3 })}`,
-    timeLabel(store.ts[store.indexAgo(k)]!, true),
-  ].join("\n");
+  lines.push(timeLabel(latest - k * hello.interval_ms, true));
+  tooltipEl.textContent = lines.join("\n");
   const tw = tooltipEl.offsetWidth;
   const th = tooltipEl.offsetHeight;
   const tx = mouse.x + 14 + tw > pw ? mouse.x - tw - 14 : mouse.x + 14;
@@ -496,6 +588,7 @@ function updateHover(): void {
 const vUnsynced = new VertexBuilder(1024);
 const vGrid = new VertexBuilder(1024);
 const vBbo = new VertexBuilder(16384);
+const vBboLong = new VertexBuilder(16384);
 const vBubbles = new VertexBuilder(4096);
 const vLiqs = new VertexBuilder(256);
 const vCandles = new RRectBuilder();
@@ -504,7 +597,15 @@ function render(): void {
   const { pw, ph } = plotSize();
   const px = dpr * renderScale;
   heatmap.upload();
-  heatmap.draw(view, features.heatmap ? range : null, px, features.smooth);
+  heatmapLong.upload();
+  const lv = features.heatmap ? longView() : null;
+  if (lv && range) {
+    // Langzeit-Ebene zuerst, die feine Heatmap darüber (leere Zellen durchsichtig)
+    heatmapLong.draw(lv.v, range, px, features.smooth);
+    heatmap.draw(view, range, px, features.smooth, true);
+  } else {
+    heatmap.draw(view, features.heatmap ? range : null, px, features.smooth);
+  }
   if (store && inst && store.count > 0) {
     const p: SceneParams = {
       store,
@@ -536,6 +637,12 @@ function render(): void {
     if (features.bbo) {
       buildBbo(p, vBbo);
       prims.draw(PRIM.SOFT_LINE, vBbo.data, vBbo.n, pw, ph, px, LINE.bbo.half, LINE.bbo.feather);
+      if (lv) {
+        // BBO der Langzeit-Ebene nur dort, wo es keine feinen Spalten mehr gibt
+        const kMin = coarseColAt(store.count, store.ts[store.latest]!, lv.c.ts[lv.c.latest]!, lv.lp);
+        buildBbo({ ...p, store: lv.c, view: lv.v, bucketTicks: inst.bucketTicks * lv.lp.factor, kMin }, vBboLong);
+        prims.draw(PRIM.SOFT_LINE, vBboLong.data, vBboLong.n, pw, ph, px, LINE.bbo.half, LINE.bbo.feather);
+      }
     }
     if (features.bubbles) {
       buildBubbles(p, vBubbles);
@@ -547,7 +654,14 @@ function render(): void {
     }
   }
   drawPriceAxis(yAxisCanvas, dpr, store, view, inst, ph);
-  drawTimeAxis(xAxisCanvas, dpr, store, view, hello?.interval_ms ?? 100, pw);
+  drawTimeAxis(xAxisCanvas, dpr, latestTs(), view, hello?.interval_ms ?? 100, pw);
+  if (features.rsi) {
+    const scene =
+      store && inst && hello && store.count
+        ? { store, view, pw, ph, intervalMs: hello.interval_ms, tickSize: inst.tickSize, bucketTicks: inst.bucketTicks }
+        : null;
+    drawRsiPane(rsiCanvas, dpr, aggregate(candles.all(), candleMinutes), candleMinutes, scene, pw);
+  }
 }
 
 let lastSig: unknown[] = [];

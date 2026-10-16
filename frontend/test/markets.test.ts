@@ -35,3 +35,29 @@ describe("Markets", () => {
     expect(m.liqSums(2000, "BTCUSDT")).toEqual({ long: 0, short: 0 });
   });
 });
+
+describe("markets: symbol info, sessions, daily RSI", () => {
+  it("stores kind/label and market sessions", () => {
+    const m = new Markets();
+    m.setInfo({ symbol: "XAUUSDT", tick_size: "0.01", kind: "tradfi", label: "Gold (XAU)" });
+    expect(m.bySymbol.get("XAUUSDT")!.kind).toBe("tradfi");
+    expect(m.bySymbol.get("XAUUSDT")!.label).toBe("Gold (XAU)");
+    expect(m.ensure("BTCUSDT").label).toBe("BTC");
+    m.apply({ t: "sess", sym: "COMMODITY", ts: 1, session: "NO_TRADING", start: 0, end: 10 });
+    expect(m.sessions.get("COMMODITY")!.session).toBe("NO_TRADING");
+    expect(m.bySymbol.has("COMMODITY")).toBe(false); // kein Coin
+  });
+
+  it("computes daily RSI with the running day replaced by the live price", () => {
+    const m = new Markets();
+    const day = 86_400_000;
+    const now = 100 * day + 1000;
+    // 30 Tage stetig steigend -> RSI 100; heute fällt der Live-Preis stark -> RSI < 100
+    const rows = Array.from({ length: 30 }, (_, i) => [(71 + i) * day, 1, 1, 1, 10 + i, 1] as [number, number, number, number, number, number]);
+    m.apply({ t: "d1", sym: "BTCUSDT", x: rows });
+    expect(m.rsi1d("BTCUSDT", now)).toBe(100);
+    m.apply({ t: "tick", sym: "BTCUSDT", ts: now, last: 20, open: 39, high: 39, low: 20, vol: 1, qvol: 1 });
+    const r = m.rsi1d("BTCUSDT", now)!;
+    expect(r).toBeLessThan(70);
+  });
+});

@@ -44,10 +44,6 @@ body {
   flex-wrap: wrap;
 }
 
-#symbol {
-  font-weight: bold;
-  font-size: 15px;
-}
 
 .badge {
   padding: 2px 8px;
@@ -136,50 +132,6 @@ button:hover {
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--muted);
-}
-
-.coin {
-  display: grid;
-  grid-template-columns: 4.6em 1fr 4.6em 5.2em;
-  gap: 6px;
-  align-items: center;
-  width: 100%;
-  padding: 5px 6px;
-  margin: 0;
-  border: 1px solid transparent;
-  border-radius: 5px;
-  background: transparent;
-  text-align: right;
-}
-
-.coin .sym {
-  text-align: left;
-  font-weight: bold;
-}
-
-.coin:hover {
-  background: var(--panel-2);
-  border-color: var(--line);
-}
-
-.coin.active {
-  background: var(--panel-2);
-  border-color: var(--accent);
-}
-
-.coin-head {
-  color: var(--muted);
-  font-size: 10px;
-  cursor: default;
-}
-
-.coin-head:hover {
-  background: transparent;
-  border-color: transparent;
-}
-
-.coin-head span:first-child {
-  text-align: left;
 }
 
 .num {
@@ -507,4 +459,201 @@ button:hover {
   font-size: 11px;
   background: var(--panel);
   border-top: 1px solid var(--line);
+}
+
+/* --- Coin-Dropdown ------------------------------------------------------------------- */
+
+.picker {
+  position: relative;
+}
+
+.picker-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-2);
+  color: var(--fg);
+  font: inherit;
+  cursor: pointer;
+}
+
+.picker-btn:hover {
+  border-color: var(--accent);
+}
+
+.picker-btn .dot {
+  margin-right: 0;
+}
+
+.picker-name {
+  font-weight: bold;
+  font-size: 15px;
+}
+
+.picker-sub {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.picker-caret {
+  color: var(--muted);
+}
+
+.picker-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 20;
+  width: 470px;
+  max-width: calc(100vw - 24px);
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+}
+
+.picker-search {
+  width: 100%;
+  margin-bottom: 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+}
+
+.picker-search:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.picker-list {
+  max-height: min(60vh, 560px);
+  overflow-y: auto;
+}
+
+.picker-row {
+  display: grid;
+  grid-template-columns: 1fr 7.5em 4.8em 5.2em 3.6em;
+  gap: 6px;
+  align-items: center;
+  width: 100%;
+  padding: 5px 6px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  text-align: right;
+  cursor: pointer;
+}
+
+.picker-row .sym {
+  text-align: left;
+  font-weight: bold;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.picker-row:hover,
+.picker-row.hl {
+  background: var(--panel-2);
+  border-color: var(--line);
+}
+
+.picker-row.active {
+  border-color: var(--accent);
+}
+
+.picker-colhead {
+  color: var(--muted);
+  font-size: 10px;
+  cursor: default;
+}
+
+.picker-colhead span:first-child {
+  text-align: left;
+}
+
+.picker-colhead:hover {
+  background: transparent;
+  border-color: transparent;
+}
+
+.picker-group {
+  margin: 8px 6px 2px;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+.picker-group.closed {
+  color: var(--liq-long);
+}
+
+.picker-foot {
+  margin-top: 6px;
+  padding: 6px 6px 0;
+  border-top: 1px solid var(--line);
+  font-size: 10.5px;
+  color: #80848b;
+}
+
+/* --- RSI ----------------------------------------------------------------------------- */
+
+.rsi.overbought {
+  color: var(--down);
+}
+
+.rsi.oversold {
+  color: var(--up);
+}
+
+.rsi-row {
+  display: grid;
+  grid-template-columns: 2.6em 1fr 3.4em;
+  gap: 8px;
+  align-items: center;
+  padding: 2px 0;
+}
+
+.rsi-row .v {
+  text-align: right;
+}
+
+.rsi-track {
+  position: relative;
+  height: 8px;
+  border-radius: 4px;
+  background: linear-gradient(
+    to right,
+    rgba(85, 229, 168, 0.25) 0 30%,
+    var(--panel-2) 30% 70%,
+    rgba(255, 115, 133, 0.25) 70% 100%
+  );
+}
+
+.rsi-mark {
+  position: absolute;
+  top: -2px;
+  width: 4px;
+  height: 12px;
+  margin-left: -2px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+
+.rsi-mark.overbought {
+  background: var(--down);
+}
+
+.rsi-mark.oversold {
+  background: var(--up);
 }

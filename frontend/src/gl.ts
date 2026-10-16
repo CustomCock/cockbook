@@ -45,6 +45,7 @@ uniform float uLogHi;
 uniform vec3 uBg;
 uniform bool uSmooth;      // weich interpolieren statt harter Zellen
 uniform int uTaps;         // vertikale Glättung: 1 = nur bilinear, 3 = zusätzlich ±2 px
+uniform bool uOverlay;     // über einer anderen Ebene: leere Zellen durchsichtig
 out vec4 outColor;
 
 float fetch(int k, int r) {
@@ -102,6 +103,7 @@ void main() {
     v = fetch(int(floor(cf)), int(floor(u)));
   }
   if (v <= 0.0) {
+    if (uOverlay) discard;
     outColor = vec4(uBg, 1.0);
     return;
   }
@@ -109,6 +111,11 @@ void main() {
   vec3 c = texture(uLut, vec2(t * (255.0 / 256.0) + 0.5 / 256.0, 0.5)).rgb;
   // Schwelle weich ausblenden statt hart abschneiden
   float alpha = uThreshold > 0.0 ? smoothstep(uThreshold * 0.6, uThreshold, v) : 1.0;
+  if (uOverlay) {
+    if (alpha <= 0.0) discard;
+    outColor = vec4(c * alpha, alpha);  // vormultipliziert, Blending ONE / ONE_MINUS_SRC_ALPHA
+    return;
+  }
   outColor = vec4(mix(uBg, c, alpha), 1.0);
 }`;
 
@@ -155,7 +162,7 @@ export class HeatmapRenderer {
     this.prog = prog;
     for (const name of [
       "uData", "uLut", "uSize", "uColW", "uOffset", "uHead", "uCount", "uCols", "uRows",
-      "uYLo", "uYHi", "uThreshold", "uLogLo", "uLogHi", "uBg", "uSmooth", "uTaps",
+      "uYLo", "uYHi", "uThreshold", "uLogLo", "uLogHi", "uBg", "uSmooth", "uTaps", "uOverlay",
     ]) {
       this.u[name] = gl.getUniformLocation(prog, name);
     }
@@ -173,6 +180,10 @@ export class HeatmapRenderer {
   attach(store: HeatmapStore): void {
     const gl = this.gl;
     this.store = store;
+    // texStorage2D macht die Textur unveränderlich (Größe fix) -> bei neuem Store
+    // (Symbolwechsel) eine neue Textur anlegen statt die alte umzudimensionieren
+    gl.deleteTexture(this.dataTex);
+    this.dataTex = gl.createTexture()!;
     gl.bindTexture(gl.TEXTURE_2D, this.dataTex);
     gl.texStorage2D(gl.TEXTURE_2D, 1, gl.R32F, store.rows, store.cols);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
@@ -203,8 +214,13 @@ export class HeatmapRenderer {
     return n;
   }
 
-  /** `pxScale` = Device-Pixel pro CSS-Pixel *dieses* Canvas (dpr x Render-Skala). */
-  draw(view: View, range: ScaleRange | null, pxScale: number, smooth = true): void {
+  /**
+   * `pxScale` = Device-Pixel pro CSS-Pixel *dieses* Canvas (dpr x Render-Skala).
+   * `overlay`: nicht löschen, leere Zellen durchsichtig lassen (feine Heatmap über der
+   * Langzeit-Ebene). Mehrere Renderer können sich ein Canvas teilen –
+   * `getContext("webgl2")` liefert für dasselbe Canvas immer denselben Kontext.
+   */
+  draw(view: View, range: ScaleRange | null, pxScale: number, smooth = true, overlay = false): void {
     const gl = this.gl;
     const s = this.store;
     const w = this.canvas.width;
@@ -212,6 +228,7 @@ export class HeatmapRenderer {
     gl.viewport(0, 0, w, h);
     const bg = BACKGROUND.map((c) => c / 255) as [number, number, number];
     if (!s || s.count === 0 || !range) {
+      if (overlay) return;
       gl.clearColor(bg[0], bg[1], bg[2], 1);
       gl.clear(gl.COLOR_BUFFER_BIT);
       return;
@@ -242,7 +259,13 @@ export class HeatmapRenderer {
     // Software-Renderer: jeder Texturzugriff kostet CPU -> nur bilinear; das
     // Hochskalieren der halben Auflösung durch den Browser glättet zusätzlich.
     gl.uniform1i(u.uTaps!, this.isSoftware ? 1 : 3);
+    gl.uniform1i(u.uOverlay!, overlay ? 1 : 0);
+    if (overlay) {
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+    } else gl.disable(gl.BLEND);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.disable(gl.BLEND);
   }
 }
 

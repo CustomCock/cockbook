@@ -106,21 +106,24 @@ export function drawPriceAxis(
   }
 }
 
+/** `latestTs`: Zeit der neuesten feinen Spalte (x-Bezug), null = keine Daten. */
 export function drawTimeAxis(
   canvas: HTMLCanvasElement,
   dpr: number,
-  store: HeatmapStore | null,
+  latestTs: number | null,
   view: View,
   intervalMs: number,
   pw: number,
 ): void {
   const ctx = prepare(canvas, dpr);
-  if (!store || store.count === 0) return;
+  if (latestTs === null) return;
   ctx.fillStyle = TEXT;
   ctx.textBaseline = "top";
   const pxPerSec = (view.colWidth * 1000) / intervalMs;
   const stepSec = niceTimeStep(110 / pxPerSec);
-  const newestTs = store.ts[store.indexAgo(view.offset)]!;
+  // Aus der Zeit rechnen statt aus dem Ringpuffer: zurückgescrollt über die feine
+  // Historie hinaus (Langzeit-Ebene, Kerzen) gibt es dort keine Spalte mehr.
+  const newestTs = latestTs - view.offset * intervalMs;
   const first = Math.floor(newestTs / 1000 / stepSec) * stepSec * 1000;
   for (let ts = first; ; ts -= stepSec * 1000) {
     const x = colToX(view.offset + (newestTs - ts) / intervalMs, view, pw);

@@ -179,3 +179,63 @@ class HeatmapAggregator:
         return HeatmapColumn(
             ts_ns, True, base, values, bb.price_ticks, ba.price_ticks, trades, liqs
         )
+
+
+class LongTermAccumulator:
+    """Mittelt feine Heatmap-Spalten zu groben Langzeit-Spalten.
+
+    - Zeit: alle Spalten eines Langzeit-Intervalls (z. B. 20 x 100 ms = 2 s)
+    - Preis: je ``factor`` Buckets zu einem (doppelter Preisbereich bei gleicher Größe)
+
+    Mittelwert statt Maximum: über Sekunden zählt, wie *dauerhaft* Liquidität dort lag.
+    Ein Maximum ließe jede kurz aufblitzende Order wie eine echte Wall aussehen.
+    Die grobe Spalte ist an der ersten feinen Spalte des Intervalls verankert; wandert der
+    Preis innerhalb des Intervalls, fallen Randwerte heraus (unkritisch bei 2 s).
+    """
+
+    def __init__(self, factor: int) -> None:
+        if factor < 1:
+            raise ValueError("factor muss >= 1 sein")
+        self.factor = factor
+        self._sum: list[float] | None = None
+        self._base = 0
+        self._count = 0
+        self._bb: int | None = None
+        self._ba: int | None = None
+
+    def add(self, col: HeatmapColumn) -> None:
+        if not col.synced or not col.values:
+            return
+        f = self.factor
+        if self._sum is None:
+            self._base = col.base_bucket // f
+            self._sum = [0.0] * (len(col.values) // f + 2)
+        s = self._sum
+        n = len(s)
+        start = col.base_bucket
+        base = self._base
+        for i, v in enumerate(col.values):
+            if v:
+                idx = (start + i) // f - base
+                if 0 <= idx < n:
+                    s[idx] += v
+        self._count += 1
+        self._bb, self._ba = col.best_bid, col.best_ask
+
+    def take(self, ts_ns: int) -> HeatmapColumn:
+        """Liefert die grobe Spalte des abgelaufenen Intervalls und setzt zurück."""
+        if self._sum is None or self._count == 0:
+            col = HeatmapColumn(ts_ns, False, 0, array("f"), None, None)
+        else:
+            div = self._count * self.factor  # Mittel über Zeit und zusammengefasste Buckets
+            col = HeatmapColumn(
+                ts_ns,
+                True,
+                self._base,
+                array("f", (v / div for v in self._sum)),
+                self._bb,
+                self._ba,
+            )
+        self._sum = None
+        self._count = 0
+        return col

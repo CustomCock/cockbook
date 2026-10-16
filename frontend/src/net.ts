@@ -10,6 +10,9 @@ export interface Hello {
   tick_size: string;
   bucket_ticks: number;
   interval_ms: number;
+  /** Langzeit-Heatmap: Spaltenbreite und feine Buckets je grobem Bucket */
+  long_interval_ms?: number;
+  long_bucket_factor?: number;
   half_range_buckets: number;
   ui: { recenter_margin: number; bubble_px_per_sqrt_kusd: number; bubble_max_px: number };
 }
@@ -25,6 +28,8 @@ export interface SymbolInfo {
   symbol: string;
   exchange?: string;
   tick_size?: string;
+  kind?: "crypto" | "tradfi";
+  label?: string;
 }
 
 export interface Symbols {
@@ -35,6 +40,7 @@ export interface Symbols {
 /** Chart-Frames (nur für das abonnierte Symbol). */
 export type ChartFrame =
   | { t: "col"; sym: string; ts: number; s: boolean; b: number; q: Uint8Array }
+  | { t: "cc"; sym: string; ts: number; s: boolean; b: number; q: Uint8Array; bb: number | null; ba: number | null }
   | { t: "bbo"; sym: string; ts: number; bb: number | null; ba: number | null }
   | { t: "tr"; sym: string; ts: number; x: [number, number, number, number][] }
   | { t: "lq"; sym: string; ts: number; x: [number, number, number][] }
@@ -60,12 +66,14 @@ export type StatFrame =
   | { t: "tv"; sym: string; ts: number; p: string; buy: number; sell: number; ratio: number }
   | { t: "liq"; sym: string; ts: number; side: 1 | -1; price: number; qty: number }
   | { t: "d1"; sym: string; x: [number, number, number, number, number, number][] }
-  | { t: "sync"; sym: string; ts: number; synced: boolean; resyncs: number; reason: string };
+  | { t: "sync"; sym: string; ts: number; synced: boolean; resyncs: number; reason: string }
+  /** TradFi-Handelszeit; `sym` ist hier der Markt (z. B. "COMMODITY"), kein Symbol */
+  | { t: "sess"; sym: string; ts: number; session: string; start: number | null; end: number | null };
 
 export type BinaryFrame = ChartFrame | StatFrame;
 
 export function isChartFrame(f: BinaryFrame): f is ChartFrame {
-  return f.t === "col" || f.t === "bbo" || f.t === "tr" || f.t === "lq" || f.t === "kh" || f.t === "k";
+  return f.t === "col" || f.t === "cc" || f.t === "bbo" || f.t === "tr" || f.t === "lq" || f.t === "kh" || f.t === "k";
 }
 
 export interface Handlers {

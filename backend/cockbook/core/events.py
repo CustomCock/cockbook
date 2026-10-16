@@ -134,6 +134,8 @@ class InstrumentInfo(Event):
 
     tick_size: Decimal
     step_size: Decimal
+    # "crypto" oder "tradfi" (Rohstoffe/Aktien mit Handelszeiten)
+    kind: str = "crypto"
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -234,3 +236,12 @@ class CandleHistory(Event):
     interval: str
     source: str
     bars: tuple[CandleBar, ...]
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class MarketSession(Event):
+    """Handelszeit eines TradFi-Marktes (``symbol`` = Markt, z. B. "COMMODITY")."""
+
+    session: str  # z. B. "REGULAR", "NO_TRADING"
+    start_ns: int | None
+    end_ns: int | None

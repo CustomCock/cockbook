@@ -110,6 +110,8 @@ export interface SceneParams {
   /** Bubble-Radius in px pro Wurzel(Gegenwert in 1000 USDT) */
   bubblePxPerSqrtKusd: number;
   bubbleMaxPx: number;
+  /** Nur Spalten ab dieser (älter); für die Langzeit-Ebene hinter der feinen Heatmap */
+  kMin?: number;
 }
 
 /**
@@ -155,13 +157,15 @@ export function buildBbo(p: SceneParams, out: VertexBuilder): void {
   out.reset();
   const { store, view, pw, ph, bucketTicks: bt } = p;
   const e = LINE.bbo.half + LINE.bbo.feather;
-  const n = visible(p);
+  // offset kann gebrochen sein (Langzeit-Ebene) -> ganze Spalten ab der angeschnittenen
+  const kFirst = Math.max(Math.floor(view.offset), Math.ceil(p.kMin ?? 0), 0);
+  const kLast = Math.min(Math.ceil(view.offset + visibleCols(view, pw)), store.count - 1);
   for (const [arr, color] of [
     [store.bestBid, COLORS.bid],
     [store.bestAsk, COLORS.ask],
   ] as const) {
     let prevY: number | null = null;
-    for (let k = view.offset + n - 1; k >= view.offset; k--) {
+    for (let k = kLast; k >= kFirst; k--) {
       const price = arr[store.indexAgo(k)]!;
       if (Number.isNaN(price)) {
         prevY = null;

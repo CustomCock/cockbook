@@ -9,7 +9,11 @@ Warum Spot und nicht Futures? USDⓈ-M-Futures gibt es bei Binance erst seit 201
 reicht bis 2017 zurück (BTC ab 17.08.2017) und deckt damit mehr Marktzyklen ab. Für
 Hochs/Tiefs auf Tagesbasis ist der Unterschied Spot/Perp vernachlässigbar.
 
-Zwischenspeicher: ``<data_dir>/history/binance_spot/<SYMBOL>_1d.json`` – sonst würde
+Ersatzquelle: Für Symbole ohne Spot-Markt (z. B. Gold ``XAUUSDT``, Silber ``XAGUSDT`` –
+TradFi-Perps) antwortet Spot mit HTTP 400 "Invalid symbol". Dann werden die
+Futures-Tageskerzen (``/fapi/v1/klines``) genommen; deren Historie ist kürzer.
+
+Zwischenspeicher: ``<data_dir>/history/binance_<quelle>/<SYMBOL>_1d.json`` – sonst würde
 jeder Start ~4 Abfragen je Symbol kosten. Danach wird nur das Ende aktualisiert.
 """
 
@@ -21,7 +25,7 @@ import logging
 import time
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import aiohttp
 
@@ -52,67 +56,86 @@ class BinanceDailyHistory:
     ) -> None:
         self.cfg = cfg
         self.symbols = symbols
-        self.dir = data_dir / "history" / "binance_spot"
+        self.base_dir = data_dir / "history"
         self.bus = bus
         self._stop = asyncio.Event()
 
     def stop(self) -> None:
         self._stop.set()
 
-    def _path(self, symbol: str) -> Path:
-        return self.dir / f"{symbol}_1d.json"
+    _SOURCES: ClassVar[dict[str, tuple[str, int]]] = {
+        # Quelle -> (Pfad, max. Kerzen je Abfrage)
+        "spot": ("/api/v3/klines", 1000),
+        "futures": ("/fapi/v1/klines", 1000),
+    }
 
-    def _load_cache(self, symbol: str) -> list[list[Any]]:
+    def _path(self, symbol: str, source: str) -> Path:
+        return self.base_dir / f"binance_{source}" / f"{symbol}_1d.json"
+
+    def _load_cache(self, symbol: str, source: str) -> list[list[Any]]:
         try:
-            rows: list[list[Any]] = json.loads(self._path(symbol).read_text(encoding="utf-8"))
+            text = self._path(symbol, source).read_text(encoding="utf-8")
+            rows: list[list[Any]] = json.loads(text)
             return rows
         except (OSError, ValueError):
             return []
 
-    def _save_cache(self, symbol: str, rows: list[list[Any]]) -> None:
-        self.dir.mkdir(parents=True, exist_ok=True)
-        tmp = self._path(symbol).with_suffix(".tmp")
+    def _save_cache(self, symbol: str, source: str, rows: list[list[Any]]) -> None:
+        path = self._path(symbol, source)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(rows), encoding="utf-8")
-        tmp.replace(self._path(symbol))  # atomar: nie eine halb geschriebene Datei
+        tmp.replace(path)  # atomar: nie eine halb geschriebene Datei
 
     async def _fetch_from(
-        self, session: aiohttp.ClientSession, symbol: str, start_ms: int
+        self, session: aiohttp.ClientSession, symbol: str, start_ms: int, source: str = "spot"
     ) -> list[list[Any]]:
-        url = f"{self.cfg.spot_rest_url}/api/v3/klines"
+        path, limit = self._SOURCES[source]
+        base = self.cfg.spot_rest_url if source == "spot" else self.cfg.futures_rest_url
         rows: list[list[Any]] = []
         while not self._stop.is_set():
             params: dict[str, str | int] = {
                 "symbol": symbol,
                 "interval": "1d",
                 "startTime": start_ms,
-                "limit": 1000,
+                "limit": limit,
             }
-            page, _ = await get_json(session, url, params, attempts=3)
+            page, _ = await get_json(session, f"{base}{path}", params, attempts=3)
             if not page:
                 break
             rows.extend(page)
-            if len(page) < 1000:
+            if len(page) < limit:
                 break
             start_ms = int(page[-1][0]) + _DAY_MS
         return rows
 
-    async def _update(self, session: aiohttp.ClientSession, symbol: str) -> None:
-        cached = self._load_cache(symbol)
+    def _start_ms(self, cached: list[list[Any]]) -> int:
         if cached:
             # Die letzten Tage neu laden: die heutige Kerze läuft noch
-            start = int(cached[-1][0]) - 2 * _DAY_MS
-        else:
-            start = int(
-                datetime.fromisoformat(self.cfg.start).replace(tzinfo=UTC).timestamp() * 1000
-            )
+            return int(cached[-1][0]) - 2 * _DAY_MS
+        return int(datetime.fromisoformat(self.cfg.start).replace(tzinfo=UTC).timestamp() * 1000)
+
+    async def _update(self, session: aiohttp.ClientSession, symbol: str) -> None:
+        # Quelle: was schon im Cache liegt, sonst erst Spot, bei "Invalid symbol" Futures
+        source = "futures" if self._load_cache(symbol, "futures") else "spot"
+        cached = self._load_cache(symbol, source)
         try:
-            new = await self._fetch_from(session, symbol, start)
+            new = await self._fetch_from(session, symbol, self._start_ms(cached), source)
         except RestError as e:
-            log.warning("daily history failed", extra={"symbol": symbol, "error": str(e)})
-            new = []
+            if source == "spot" and not cached and "HTTP 400" in str(e):
+                source = "futures"
+                cached = []
+                try:
+                    new = await self._fetch_from(session, symbol, self._start_ms([]), source)
+                except RestError as e2:
+                    log.warning("daily history failed", extra={"symbol": symbol, "error": str(e2)})
+                    new = []
+            else:
+                log.warning("daily history failed", extra={"symbol": symbol, "error": str(e)})
+                new = []
         rows = merge_rows(cached, new)
         if new:
-            self._save_cache(symbol, rows)
+            self._save_cache(symbol, source, rows)
         if rows:
             await self.bus.publish(
                 CandleHistory(
@@ -120,13 +143,13 @@ class BinanceDailyHistory:
                     symbol=symbol,
                     ts_recv_ns=time.time_ns(),
                     interval="1d",
-                    source="spot",
+                    source=source,
                     bars=tuple(parse_kline_row(r) for r in rows),
                 )
             )
             log.info(
                 "daily history ready",
-                extra={"symbol": symbol, "days": len(rows), "fetched": len(new)},
+                extra={"symbol": symbol, "source": source, "days": len(rows), "fetched": len(new)},
             )
 
     async def run(self) -> None:

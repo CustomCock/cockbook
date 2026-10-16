@@ -8,11 +8,33 @@ logging:
 exchanges:
   - name: binance_usdm
     enabled: true
-    symbols:                      # Reihenfolge = Reihenfolge in der Seitenleiste
-      - symbol: BTCUSDT
-      - symbol: ETHUSDT
-      - symbol: SOLUSDT
-      - symbol: XRPUSDT
+    # Reihenfolge = Reihenfolge im Coin-Menü. Top 20 nach Marktkapitalisierung (ohne
+    # Stablecoins) + Gold/Silber. Kennzahlen (Preis, 24h, Funding …) gibt es für alle;
+    # das Orderbuch (Heatmap) läuft ab Start nur bei always_on, sonst ab der ersten Auswahl.
+    # Symbole, die es auf Binance USDⓈ-M nicht gibt, werden mit Warnung übersprungen.
+    symbols:
+      - {symbol: BTCUSDT, always_on: true}
+      - {symbol: ETHUSDT, always_on: true}
+      - {symbol: XRPUSDT, always_on: true}
+      - symbol: BNBUSDT
+      - {symbol: SOLUSDT, always_on: true}
+      - symbol: TRXUSDT
+      - symbol: DOGEUSDT
+      - symbol: ADAUSDT
+      - symbol: HYPEUSDT
+      - symbol: LINKUSDT
+      - symbol: BCHUSDT
+      - symbol: XLMUSDT
+      - symbol: SUIUSDT
+      - symbol: AVAXUSDT
+      - symbol: LTCUSDT
+      - symbol: HBARUSDT
+      - symbol: TONUSDT
+      - {symbol: 1000SHIBUSDT, label: "SHIB (x1000)"}   # Futures handeln SHIB nur in 1000er-Einheiten
+      - symbol: DOTUSDT
+      - symbol: UNIUSDT
+      - {symbol: XAUUSDT, label: "Gold (XAU)"}           # TradFi-Perpetual, Handelspausen am Wochenende
+      - {symbol: XAGUSDT, label: "Silber (XAG)"}
       # optional fest statt automatisch:  - {symbol: BTCUSDT, bucket_ticks: 5}
     # Endpoints laut Doku (geroutet: /public = Depth, /market = aggTrade/forceOrder)
     rest_url: https://fapi.binance.com
@@ -25,6 +47,7 @@ exchanges:
     coverage_refresh_min_interval_s: 5  # Refresh wird eingearbeitet, ohne das Buch zu verwerfen
     liquidations_all_market: true   # Liquidationen aller Coins (sekündlich) statt nur der eigenen
     candles_1m_history: 1500        # 1m-Kerzen beim Start (max. 1500 = 25 h)
+    tradfi_stale_timeout_s: 900     # Gold/Silber: in Handelspausen kommen minutenlang keine Updates
     validation:
       enabled: true
       interval_s: 300             # Abgleich lokales Buch vs. REST-Snapshot alle 5 min
@@ -44,6 +67,8 @@ exchanges:
 
 aggregation:
   interval_ms: 100        # Breite einer Heatmap-Spalte
+  long_interval_ms: 2000  # Langzeit-Heatmap: eine Spalte = Mittel über 2 s ...
+  long_bucket_factor: 2   # ... und über je 2 Preis-Buckets (doppelter Preisbereich)
   bucket_bps: 0.06        # Preis-Bucket ~ 0.06 Basispunkte des Preises, je Symbol automatisch
                           # auf runde Tick-Vielfache gerundet (BTC ~80k -> 0.50 USDT)
   half_range_buckets: 400 # Buckets je Seite um den Mid (BTC: 400 x 0.50 = +-200 USDT)
@@ -52,6 +77,7 @@ server:
   host: 127.0.0.1         # nur Loopback erlaubt
   port: 8765
   history_columns: 3000   # Historie für neu verbundene Clients (3000 x 100 ms = 5 min)
+  long_history_columns: 3600  # Langzeit-Heatmap (3600 x 2 s = 2 h)
   client_queue_frames: 2000
 
 ui:
@@ -63,6 +89,7 @@ ui:
 history:                  # Tageskerzen (Spot) für ATH, Zyklen, Jahresperformance
   enabled: true
   spot_rest_url: https://data-api.binance.vision   # offizieller Binance-Host nur für Marktdaten
+  futures_rest_url: https://fapi.binance.com       # Ersatz ohne Spot-Markt (z. B. Gold/Silber)
   start: "2017-01-01"     # Binance-Spot beginnt im August 2017
   refresh_s: 3600         # Cache in data/history/, danach nur das Ende aktualisieren
 

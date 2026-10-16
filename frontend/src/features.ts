@@ -6,7 +6,7 @@
  * Einstellungen gelten für alle Coins und werden im Browser gespeichert.
  */
 
-export type FeatureGroup = "chart" | "history" | "derivatives" | "planned";
+export type FeatureGroup = "chart" | "history" | "indicators" | "derivatives" | "planned";
 
 export interface Feature {
   id: string;
@@ -21,6 +21,8 @@ export const FEATURES: Feature[] = [
   // --- Chart-Ebenen -----------------------------------------------------------------
   { id: "heatmap", label: "Liquidity-Heatmap", group: "chart", status: "live", defaultOn: true,
     hint: "Orderbuch-Liquidität je Preis über die Zeit" },
+  { id: "longterm", label: "Langzeit-Heatmap", group: "chart", status: "live", defaultOn: true,
+    hint: "Ältere Liquidität (bis 2 h) als gröbere Ebene unter der Live-Heatmap: Mittel über 2 s und je 2 Preis-Stufen. Beim Herauszoomen in der Zeit sichtbar" },
   { id: "smooth", label: "Weich zeichnen", group: "chart", status: "live", defaultOn: true,
     hint: "Weiche Übergänge zwischen Preis-Leveln statt harter Kanten" },
   { id: "bubbles", label: "Trade-Bubbles", group: "chart", status: "live", defaultOn: true,
@@ -33,12 +35,18 @@ export const FEATURES: Feature[] = [
     hint: "Horizontale Hilfslinien" },
   { id: "candles", label: "Kerzen", group: "chart", status: "live", defaultOn: false,
     hint: "OHLC-Kerzen über der Heatmap (1m-Basis von Binance; 3m/5m/10m daraus gebaut)" },
+  { id: "rsi", label: "RSI-Fenster", group: "chart", status: "live", defaultOn: true,
+    hint: "RSI(14) nach Wilder unter dem Chart, im gewählten Kerzen-Intervall; Linien bei 70 (überkauft) und 30 (überverkauft)" },
 
   // --- Langfristig: ATH & Zyklen ---------------------------------------------------------
   { id: "ath", label: "Allzeithoch & Jahr", group: "history", status: "live", defaultOn: true,
     hint: "ATH, Abstand, Tage seit ATH, 52-Wochen-Spanne, Performance seit 1. Januar (Spot-Tageskerzen)" },
   { id: "cycles", label: "Marktzyklus", group: "history", status: "live", defaultOn: true,
     hint: "Halving-Zyklen oder eigener Zeitraum: Länge, Fortschritt, Zyklus-Hoch/-Tief, Performance" },
+
+  // --- Indikatoren --------------------------------------------------------------------
+  { id: "rsiOverview", label: "RSI-Übersicht", group: "indicators", status: "live", defaultOn: true,
+    hint: "RSI(14) des gewählten Coins über mehrere Zeitrahmen (1m–1h aus 1m-Kerzen, 1D aus Tageskerzen)" },
 
   // --- Derivate-Kennzahlen (Coinank: Funding, OI, Longs vs Shorts, Liquidationen) ------
   { id: "markPrice", label: "Mark- & Indexpreis", group: "derivatives", status: "live", defaultOn: true,
@@ -62,7 +70,7 @@ export const FEATURES: Feature[] = [
   { id: "fundingHeatmap", label: "Funding-Heatmap & kumuliertes Funding", group: "planned", status: "planned", defaultOn: false,
     hint: "Funding-Historie aller Coins per REST" },
   { id: "rsiHeatmap", label: "RSI-Heatmap / Screener", group: "planned", status: "planned", defaultOn: false,
-    hint: "Aus Kerzen berechnet – Phase 6 (Indikatoren)" },
+    hint: "RSI aller Coins über mehrere Zeitrahmen als Heatmap (RSI 1D steht schon im Coin-Menü)" },
   { id: "depthDelta", label: "Orderbook Depth Delta", group: "planned", status: "planned", defaultOn: false,
     hint: "Bid/Ask-Ungleichgewicht im Buch – Phase 6 (Imbalance)" },
   { id: "aggBook", label: "Aggregiertes Orderbuch / Börsen-Vergleich", group: "planned", status: "planned", defaultOn: false,

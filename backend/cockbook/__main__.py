@@ -1,6 +1,7 @@
 """Einstiegspunkt: ``python -m cockbook [--config PFAD] [--symbol SYMBOL]``.
 
-Startet Datenquelle -> EventBus -> Heatmap-Aggregation -> WebSocket-Bridge.
+Startet Datenquellen (Orderbücher bei Bedarf) -> EventBus -> Heatmap-Aggregation
+-> WebSocket-Bridge.
 Das Frontend (``make dev-frontend``) verbindet sich auf ``ws://127.0.0.1:8765/ws``.
 """
 
@@ -13,7 +14,7 @@ import logging
 import os
 from pathlib import Path
 
-from cockbook.app import build_sources, install_stop_signals, stop_sources_on
+from cockbook.app import SourceManager, configured_symbols, install_stop_signals
 from cockbook.config import AppConfig, load_config
 from cockbook.core.eventbus import EventBus
 from cockbook.log import setup_logging
@@ -30,13 +31,14 @@ async def run(cfg: AppConfig, symbol: str | None) -> None:
     await bridge.start()
     try:
         async with EventBus() as bus:
-            sources = build_sources(cfg, bus, only_symbol=symbol)
+            manager = SourceManager(cfg, bus, only_symbol=symbol)
             feed = MarketFeed.from_config(cfg, bus, bridge)
+            bridge.set_symbol_order(configured_symbols(cfg))
+            # Wählt das Frontend einen Coin, startet dessen Orderbuch (falls noch nicht aktiv)
+            bridge.on_subscribe = manager.activate
             async with asyncio.TaskGroup() as tg:
                 tg.create_task(feed.run(stop))
-                for src in sources:
-                    tg.create_task(src.run())
-                tg.create_task(stop_sources_on(stop, sources))
+                tg.create_task(manager.run(stop))
     finally:
         await bridge.stop()
 

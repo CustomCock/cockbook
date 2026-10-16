@@ -85,3 +85,37 @@ async def test_daily_history_paginates_caches_and_updates(tmp_path: Path) -> Non
             assert calls == [T0 + (total - 3) * DAY]
     finally:
         await server.close()
+
+
+async def test_daily_history_falls_back_to_futures_for_tradfi(tmp_path: Path) -> None:
+    async def spot(request: web.Request) -> web.Response:
+        return web.json_response({"code": -1121, "msg": "Invalid symbol."}, status=400)
+
+    async def futures(request: web.Request) -> web.Response:
+        assert request.query["symbol"] == "XAUUSDT"
+        return web.json_response([row(i, "2400") for i in range(30)])
+
+    app = web.Application()
+    app.router.add_get("/api/v3/klines", spot)
+    app.router.add_get("/fapi/v1/klines", futures)
+    server = TestServer(app, host="127.0.0.1")
+    await server.start_server()
+    try:
+        url = f"http://127.0.0.1:{server.port}"
+        cfg = HistoryConfig(spot_rest_url=url, futures_rest_url=url, start="2017-08-17")
+        got: list[CandleHistory] = []
+
+        async def collect(e: CandleHistory) -> None:
+            got.append(e)
+
+        async with EventBus() as bus:
+            bus.subscribe(CandleHistory, collect)
+            hist = BinanceDailyHistory(cfg, ["XAUUSDT"], tmp_path, bus)
+            async with aiohttp.ClientSession() as session:
+                await hist._update(session, "XAUUSDT")
+            await asyncio.sleep(0.05)
+        assert got[-1].source == "futures"
+        assert len(got[-1].bars) == 30
+        assert (tmp_path / "history/binance_futures/XAUUSDT_1d.json").exists()
+    finally:
+        await server.close()

@@ -39,7 +39,13 @@ SYMBOLS: dict[str, tuple[Decimal, int, float]] = {
     "ETHUSDT": (Decimal("0.01"), 300_000, 3.0),
     "SOLUSDT": (Decimal("0.01"), 15_000, 40.0),
     "XRPUSDT": (Decimal("0.0001"), 25_000, 3000.0),
+    "BNBUSDT": (Decimal("0.01"), 60_000, 5.0),
+    "DOGEUSDT": (Decimal("0.00001"), 20_000, 20000.0),
+    "XAUUSDT": (Decimal("0.01"), 400_000, 2.0),
+    "XAGUSDT": (Decimal("0.001"), 48_000, 50.0),
 }
+# TradFi-Perps: kein Spot-Markt (Tageskerzen nur über /fapi), contractType laut Doku
+TRADFI = {"XAUUSDT", "XAGUSDT"}
 
 
 class SimBook:
@@ -202,8 +208,9 @@ class Simulator:
                 await self._foreign_liquidation()
             if time.monotonic() - last_stats >= 1.0:
                 last_stats = time.monotonic()
-                for sym, book in self.books.items():
-                    await self._stats(sym, book)
+                await self._stats()
+                if self.rng.random() < 0.1:
+                    await self._session()
 
     def _candle_update(self, sym: str, price: Decimal, qty: float, now: int) -> None:
         start = now // 60_000 * 60_000
@@ -286,41 +293,62 @@ class Simulator:
             self.market, "*ALL", "!forceOrder@arr", {"e": "forceOrder", "E": now, "o": o, "st": 1}
         )
 
-    async def _stats(self, sym: str, book: SimBook) -> None:
+    async def _stats(self) -> None:
+        """Gesamtmarkt-Streams wie ``!markPrice@arr@1s`` / ``!miniTicker@arr`` (Arrays)."""
+        marks, tickers = [], []
+        for sym, book in self.books.items():
+            m, t = self._stat_items(sym, book)
+            marks.append(m)
+            tickers.append(t)
+            await self._send(self.market, sym, f"{sym.lower()}@markPrice@1s", m)
+            await self._send(self.market, sym, f"{sym.lower()}@miniTicker", t)
+        # Coin-margined Eintrag, den CockBook verwerfen muss
+        marks.append({**marks[0], "s": "BTCUSD_PERP", "st": 2})
+        await self._send(self.market, "*ALL", "!markPrice@arr@1s", marks)
+        await self._send(self.market, "*ALL", "!miniTicker@arr", tickers)
+
+    async def _session(self) -> None:
+        now = int(time.time() * 1000)
+        hour = now // 3_600_000 * 3_600_000
+        await self._send(
+            self.market,
+            "*ALL",
+            "tradingSession",
+            {
+                "e": "CommodityUpdate",
+                "E": now,
+                "t": hour,
+                "T": hour + 3_600_000,
+                "S": "REGULAR" if (now // 3_600_000) % 6 else "NO_TRADING",
+            },
+        )
+
+    def _stat_items(self, sym: str, book: SimBook) -> tuple[dict[str, Any], dict[str, Any]]:
         now = int(time.time() * 1000)
         mid = book.mid * book.tick
-        await self._send(
-            self.market,
-            sym,
-            f"{sym.lower()}@markPrice@1s",
-            {
-                "e": "markPriceUpdate",
-                "E": now,
-                "s": sym,
-                "p": str(mid),
-                "i": str(mid),
-                "P": str(mid),
-                "r": f"{self.rng.uniform(-0.0002, 0.0003):.8f}",
-                "T": (now // 28_800_000 + 1) * 28_800_000,
-            },
-        )
+        mark = {
+            "e": "markPriceUpdate",
+            "E": now,
+            "s": sym,
+            "p": str(mid),
+            "i": str(mid),
+            "P": str(mid),
+            "r": f"{self.rng.uniform(-0.0002, 0.0003):.8f}",
+            "T": (now // 28_800_000 + 1) * 28_800_000,
+        }
         o = mid * Decimal("0.98")
-        await self._send(
-            self.market,
-            sym,
-            f"{sym.lower()}@miniTicker",
-            {
-                "e": "24hrMiniTicker",
-                "E": now,
-                "s": sym,
-                "c": str(mid),
-                "o": str(o),
-                "h": str(mid * Decimal("1.01")),
-                "l": str(o * Decimal("0.99")),
-                "v": "123456.7",
-                "q": "987654321.0",
-            },
-        )
+        ticker = {
+            "e": "24hrMiniTicker",
+            "E": now,
+            "s": sym,
+            "c": str(mid),
+            "o": str(o),
+            "h": str(mid * Decimal("1.01")),
+            "l": str(o * Decimal("0.99")),
+            "v": "123456.7",
+            "q": "987654321.0",
+        }
+        return mark, ticker
 
     async def exchange_info(self, _: web.Request) -> web.Response:
         return web.json_response(
@@ -329,6 +357,7 @@ class Simulator:
                     {
                         "symbol": sym,
                         "status": "TRADING",
+                        "contractType": "TRADIFI_PERPETUAL" if sym in TRADFI else "PERPETUAL",
                         "filters": [
                             {"filterType": "PRICE_FILTER", "tickSize": str(tick)},
                             {"filterType": "LOT_SIZE", "stepSize": "0.001"},
@@ -336,8 +365,6 @@ class Simulator:
                     }
                     for sym, (tick, _, _) in {
                         **SYMBOLS,
-                        "DOGEUSDT": (Decimal("0.00001"), 0, 0.0),
-                        "BNBUSDT": (Decimal("0.01"), 0, 0.0),
                         "ADAUSDT": (Decimal("0.0001"), 0, 0.0),
                     }.items()
                 ]
@@ -387,6 +414,8 @@ class Simulator:
 
     async def klines_1m(self, request: web.Request) -> web.Response:
         sym = request.query["symbol"]
+        if request.query.get("interval") == "1d":
+            return await self.klines_1d(request)
         book = self.books[sym]
         limit = int(request.query.get("limit", "500"))
         now_min = int(time.time() * 1000) // 60_000 * 60_000
@@ -403,6 +432,11 @@ class Simulator:
         return web.json_response(rows[::-1])
 
     async def klines_1d_spot(self, request: web.Request) -> web.Response:
+        if request.query["symbol"] in TRADFI:
+            return web.json_response({"code": -1121, "msg": "Invalid symbol."}, status=400)
+        return await self.klines_1d(request)
+
+    async def klines_1d(self, request: web.Request) -> web.Response:
         """Synthetische Tageshistorie ab 2017 (deterministisch je Symbol)."""
         sym = request.query["symbol"]
         start = int(request.query["startTime"])
@@ -428,7 +462,7 @@ class Simulator:
         ws = web.WebSocketResponse()
         await ws.prepare(request)
         syms = {
-            "*ALL" if st.startswith("!") else st.split("@")[0].upper()
+            "*ALL" if st.startswith("!") or st == "tradingSession" else st.split("@")[0].upper()
             for st in request.query.get("streams", "").split("/")
         }
         pool[ws] = syms

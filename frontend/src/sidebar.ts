@@ -1,13 +1,14 @@
 /**
- * Seitenleiste links: Coin-Auswahl, Chart-Ebenen (inkl. Kerzen), ATH & Zyklen,
+ * Seitenleiste links: Chart-Ebenen (inkl. Kerzen), ATH & Zyklen, Indikatoren (RSI),
  * Derivate-Kennzahlen, Liquidationen (Gesamtmarkt) und geplante Funktionen.
  * Die Struktur wird einmal aufgebaut; `update()` setzt nur Inhalte neu (2x pro Sekunde).
  */
 
-import { CANDLE_INTERVALS, type CandleMinutes } from "./candles";
+import { aggregate, CANDLE_INTERVALS, type Bar, type CandleMinutes } from "./candles";
 import { athStats, CYCLE_PRESETS, cycleStats, DAY_MS, parseDate } from "./cycles";
 import { FEATURES, type FeatureState } from "./features";
 import { liqPerSecond, topLiquidated, type Markets } from "./markets";
+import { lastRsi, RSI_OVERBOUGHT, RSI_OVERSOLD, RSI_PERIOD, rsiZone } from "./rsi";
 
 export interface CycleChoice {
   id: string; // Preset-ID oder "custom"
@@ -16,7 +17,8 @@ export interface CycleChoice {
 }
 
 export interface SidebarCallbacks {
-  onSelect(symbol: string): void;
+  /** 1m-Kerzen des gewählten Coins (für die RSI-Übersicht) */
+  candles1m(): Bar[];
   onToggle(id: string, on: boolean): void;
   onCandleInterval(minutes: CandleMinutes): void;
   onCycle(choice: CycleChoice): void;
@@ -101,19 +103,10 @@ function progress(pct: number): HTMLElement {
   return wrap;
 }
 
-interface CoinRow {
-  row: HTMLElement;
-  dot: HTMLElement;
-  px: HTMLElement;
-  chg: HTMLElement;
-  ytd: HTMLElement;
-}
-
 export class Sidebar {
-  private coinRows = new Map<string, CoinRow>();
-  private coinsBox: HTMLElement;
   private derivTitle: HTMLElement;
   private histTitle: HTMLElement;
+  private indTitle: HTMLElement;
   private values = new Map<string, HTMLElement>();
   private active: string | null = null;
   private cycleSelect!: HTMLSelectElement;
@@ -131,16 +124,6 @@ export class Sidebar {
     private cycle: CycleChoice,
   ) {
     root.replaceChildren();
-
-    // Coins
-    const coins = el("section");
-    coins.append(el("h3", "", "Coins"));
-    const head = el("div", "coin coin-head");
-    const ytdHead = el("span", "", "Jahr");
-    ytdHead.title = "Veränderung seit 1. Januar (UTC)";
-    head.append(el("span", "", "Symbol"), el("span", "", "Preis"), el("span", "", "24h"), ytdHead);
-    this.coinsBox = el("div", "coins");
-    coins.append(head, this.coinsBox);
 
     // Chart-Ebenen
     const chart = el("section");
@@ -174,6 +157,20 @@ export class Sidebar {
       hist.append(item);
     }
 
+    // Indikatoren
+    const ind = el("section");
+    this.indTitle = el("h3", "", "Indikatoren");
+    ind.append(this.indTitle);
+    for (const f of FEATURES.filter((x) => x.group === "indicators")) {
+      const item = el("div", "feat");
+      item.append(this.toggle(f.id, f.label, f.hint));
+      const val = el("div", "feat-val");
+      val.hidden = !this.features[f.id];
+      this.values.set(f.id, val);
+      item.append(val);
+      ind.append(item);
+    }
+
     // Derivate
     const deriv = el("section");
     this.derivTitle = el("h3", "", "Derivate");
@@ -197,7 +194,7 @@ export class Sidebar {
       planned.append(item);
     }
 
-    root.append(coins, chart, hist, deriv, planned);
+    root.append(chart, hist, ind, deriv, planned);
   }
 
   private toggle(id: string, label: string, hint: string): HTMLElement {
@@ -279,61 +276,16 @@ export class Sidebar {
     return box;
   }
 
-  setSymbols(symbols: string[]): void {
-    const known = [...this.coinRows.keys()];
-    if (known.length === symbols.length && known.every((s, i) => s === symbols[i])) return;
-    this.coinsBox.replaceChildren();
-    this.coinRows.clear();
-    for (const sym of symbols) {
-      const row = el("button", "coin");
-      row.type = "button";
-      const dot = el("span", "dot");
-      const name = el("span", "sym");
-      name.append(dot, document.createTextNode(base(sym)));
-      const px = el("span", "num");
-      const chg = el("span", "num");
-      const ytd = el("span", "num");
-      row.append(name, px, chg, ytd);
-      row.addEventListener("click", () => this.cb.onSelect(sym));
-      this.coinsBox.append(row);
-      this.coinRows.set(sym, { row, dot, px, chg, ytd });
-    }
-    if (this.active) this.setActive(this.active);
-  }
-
   setActive(symbol: string): void {
     this.active = symbol;
-    for (const [sym, r] of this.coinRows) r.row.classList.toggle("active", sym === symbol);
-    this.derivTitle.textContent = `Derivate · ${base(symbol)}`;
-    this.histTitle.textContent = `ATH & Zyklen · ${base(symbol)}`;
+    const label = this.markets.bySymbol.get(symbol)?.label ?? base(symbol);
+    this.derivTitle.textContent = `Derivate · ${label}`;
+    this.histTitle.textContent = `ATH & Zyklen · ${label}`;
+    this.indTitle.textContent = `Indikatoren · ${label}`;
   }
 
   update(now: number): void {
     const mk = this.markets;
-    for (const [sym, r] of this.coinRows) {
-      const m = mk.bySymbol.get(sym);
-      const price = mk.price(sym);
-      r.px.textContent =
-        price === null
-          ? "–"
-          : price.toLocaleString("de-DE", {
-              minimumFractionDigits: m?.decimals ?? 2,
-              maximumFractionDigits: m?.decimals ?? 2,
-            });
-      const chg = mk.change24h(sym);
-      r.chg.textContent = fmtPct(chg, 1);
-      r.chg.className = `num ${cls(chg)}`;
-      const ath = m?.daily ? athStats(m.daily, price, now) : null;
-      const ytd = ath?.ytdPct ?? null;
-      r.ytd.textContent = fmtPct(ytd, 1);
-      r.ytd.className = `num ${cls(ytd)}`;
-      const sync = m?.sync;
-      r.dot.className = `dot ${!sync ? "" : sync.synced ? "ok" : "bad"}`;
-      r.row.title = sync
-        ? `${sym}: ${sync.synced ? "Orderbuch synchron" : "NICHT synchron"} · Neu-Syncs: ${sync.resyncs}` +
-          (sync.reason ? ` · zuletzt: ${sync.reason}` : "")
-        : sym;
-    }
     const sym = this.active;
     if (!sym) return;
     const m = mk.bySymbol.get(sym);
@@ -395,6 +347,37 @@ export class Sidebar {
       if (preset?.estimatedEnd) nodes.push(el("div", "hint", "* Ende geschätzt (nächstes Halving ≈ April 2028)"));
       set("cycles", ...nodes);
     } else set("cycles", m?.daily ? "keine Daten im gewählten Zeitraum" : "lade Tageshistorie …");
+
+    // --- RSI ---------------------------------------------------------------------------
+    const rsiVal = this.values.get("rsiOverview");
+    if (rsiVal && !rsiVal.hidden) {
+      const bars = this.cb.candles1m();
+      const frames: [string, number | null][] = [1, 5, 15, 60].map((mins) => [
+        mins < 60 ? `${mins}m` : `${mins / 60}h`,
+        lastRsi(aggregate(bars, mins).map((b) => b.c)),
+      ]);
+      frames.push(["1D", mk.rsi1d(sym, now)]);
+      const rows = frames.map(([label, v]) => {
+        const r = el("div", "rsi-row");
+        const track = el("div", "rsi-track");
+        const mark = el("div", `rsi-mark ${rsiZone(v)}`);
+        mark.hidden = v === null;
+        if (v !== null) mark.style.left = `${v}%`;
+        track.append(mark);
+        r.append(el("span", "k", label), track, el("span", `v num rsi ${rsiZone(v)}`, v === null ? "–" : v.toFixed(1)));
+        return r;
+      });
+      set(
+        "rsiOverview",
+        ...rows,
+        el(
+          "div",
+          "hint",
+          `RSI(${RSI_PERIOD}), Wilder · ≥ ${RSI_OVERBOUGHT} überkauft, ≤ ${RSI_OVERSOLD} überverkauft · ` +
+            "Kurzfristige Rahmen aus den 1m-Kerzen der letzten 25 h (1h ist daher nur grob eingeschwungen)",
+        ),
+      );
+    }
 
     // --- Derivate ----------------------------------------------------------------------
     if (m?.mark) {
