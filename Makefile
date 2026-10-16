@@ -8,7 +8,7 @@ FRONTEND:= frontend
 CONFIG  ?= config.yaml
 PY      := $(UV) run --project $(BACKEND)
 
-.PHONY: help install hooks dev dev-backend dev-frontend test lint format record book replay
+.PHONY: help check-node install hooks dev dev-backend dev-frontend test lint format record book replay
 
 help:
 	@echo "install  – Backend- und Frontend-Abhängigkeiten installieren"
@@ -21,7 +21,14 @@ help:
 	@echo "book     – Live-Orderbuch im Terminal (debug_book)"
 	@echo "replay   – Replay starten (Phase 4)"
 
-install:
+# Klare Fehlermeldung statt "Fehler 127", wenn Node/npm fehlen oder zu alt sind
+# (Vite 7 / Vitest 5 brauchen Node >= 22.12).
+check-node:
+	@command -v node >/dev/null 2>&1 && command -v $(NPM) >/dev/null 2>&1 || { \
+	  echo "Node.js/npm nicht gefunden. Installation siehe README (Abschnitt Voraussetzungen)."; exit 1; }
+	@node $(FRONTEND)/scripts/check-node.mjs
+
+install: check-node
 	cd $(BACKEND) && $(UV) sync
 	cd $(FRONTEND) && $(NPM) install
 
@@ -34,8 +41,8 @@ dev:
 dev-backend:
 	$(PY) python -m cockbook --config $(CONFIG)
 
-dev-frontend:
-	cd $(FRONTEND) && $(NPM) run dev
+dev-frontend: check-node
+	cd $(FRONTEND) && { test -d node_modules || $(NPM) install; } && $(NPM) run dev
 
 test:
 	cd $(BACKEND) && $(UV) run pytest

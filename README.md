@@ -25,7 +25,20 @@ Börse ──WS/REST──▶ Adapter ──normalisierte Events──▶ EventB
 
 ## Schnellstart (Entwicklung)
 
-Voraussetzungen: [uv](https://docs.astral.sh/uv/), Node.js ≥ 20, `make` (Windows: z. B. über Git Bash).
+### Voraussetzungen
+
+- [uv](https://docs.astral.sh/uv/) (Python-Umgebung)
+- Node.js **≥ 22.12** mit npm. Das `nodejs`-Paket aus den Ubuntu-Paketquellen ist dafür meist zu alt;
+  empfohlen ist [nvm](https://github.com/nvm-sh/nvm): `nvm install --lts` (Windows: Installer von
+  [nodejs.org](https://nodejs.org), LTS-Version)
+- `git` und `make` (Windows: z. B. über Git Bash)
+
+Das Repo per `git clone` holen (nicht als ZIP), dann reicht später `git pull` für Updates:
+
+```bash
+git clone https://github.com/CustomCock/cockbook.git
+cd cockbook
+```
 
 ```bash
 make install   # Backend (uv sync) + Frontend (npm install)
