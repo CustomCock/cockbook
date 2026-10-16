@@ -59,6 +59,20 @@ class BinanceDailyHistory:
         self.base_dir = data_dir / "history"
         self.bus = bus
         self._stop = asyncio.Event()
+        # Später hinzugekommene Symbole (automatisch gefundene TradFi-Kontrakte)
+        self._pending: list[str] = []
+        self._futures_only: set[str] = set()
+        self._wake = asyncio.Event()
+
+    def add_symbols(self, symbols: list[str], *, futures_only: bool = False) -> None:
+        """Weitere Symbole nachladen. ``futures_only``: Spot gar nicht erst fragen
+        (TradFi-Kontrakte haben keinen Spot-Markt -> spart eine Abfrage je Symbol)."""
+        new = [s for s in symbols if s not in self.symbols and s not in self._pending]
+        if futures_only:
+            self._futures_only.update(new)
+        self._pending.extend(new)
+        if new:
+            self._wake.set()
 
     def stop(self) -> None:
         self._stop.set()
@@ -117,7 +131,11 @@ class BinanceDailyHistory:
 
     async def _update(self, session: aiohttp.ClientSession, symbol: str) -> None:
         # Quelle: was schon im Cache liegt, sonst erst Spot, bei "Invalid symbol" Futures
-        source = "futures" if self._load_cache(symbol, "futures") else "spot"
+        source = (
+            "futures"
+            if symbol in self._futures_only or self._load_cache(symbol, "futures")
+            else "spot"
+        )
         cached = self._load_cache(symbol, source)
         try:
             new = await self._fetch_from(session, symbol, self._start_ms(cached), source)
@@ -155,10 +173,29 @@ class BinanceDailyHistory:
     async def run(self) -> None:
         timeout = aiohttp.ClientTimeout(total=30)
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            while True:
-                for sym in self.symbols:
-                    if self._stop.is_set():
-                        return
+            next_refresh = 0.0
+            while not self._stop.is_set():
+                if time.monotonic() >= next_refresh:
+                    for sym in list(self.symbols):
+                        if self._stop.is_set():
+                            return
+                        await self._update(session, sym)
+                    next_refresh = time.monotonic() + self.cfg.refresh_s
+                while self._pending and not self._stop.is_set():
+                    sym = self._pending.pop(0)
+                    self.symbols.append(sym)
                     await self._update(session, sym)
-                if await sleep_or_stop(self._stop, self.cfg.refresh_s):
-                    return
+                    # Viele neue Symbole auf einmal: Gewichtslimit der REST-API schonen
+                    if await sleep_or_stop(self._stop, self.cfg.pace_s):
+                        return
+                self._wake.clear()
+                wait = max(0.0, next_refresh - time.monotonic())
+                wake = asyncio.ensure_future(self._wake.wait())
+                stop = asyncio.ensure_future(self._stop.wait())
+                try:
+                    await asyncio.wait(
+                        {wake, stop}, timeout=wait, return_when=asyncio.FIRST_COMPLETED
+                    )
+                finally:
+                    wake.cancel()
+                    stop.cancel()

@@ -17,22 +17,28 @@
         Schwelle <input id="threshold" type="range" min="0" max="0.9" step="0.01" value="0.1" />
       </label>
       <button id="live" title="Zur Gegenwart springen und Auto-Zentrierung einschalten (Taste C)">Live</button>
+      <span id="ltinfo"></span>
       <span id="perf"></span>
     </header>
     <div id="layout">
     <aside id="sidebar"></aside>
+    <div id="main">
+    <nav id="tabs"></nav>
     <main id="chart">
       <canvas id="gl"></canvas>
       <canvas id="yaxis"></canvas>
       <canvas id="rsi"></canvas>
+      <canvas id="dom"></canvas>
+      <div id="ltmark"><span class="lt-l">◂ Langzeit</span><span class="lt-r">Live ▸</span></div>
       <canvas id="xaxis"></canvas>
       <div id="crossV" class="cross"></div>
       <div id="crossH" class="cross"></div>
       <div id="tooltip"></div>
     </main>
     </div>
+    </div>
     <footer id="help">
-      Mausrad: Preis-Zoom · Shift+Mausrad: Zeit-Zoom · Ziehen: verschieben · Doppelklick / C: Live + Auto-Zentrierung · F: Preis an Kerzen anpassen · /: Coin suchen
+      Mausrad: Preis-Zoom · Shift+Mausrad: Zeit-Zoom · Ziehen: verschieben · Doppelklick / C: Live + Auto-Zentrierung · F: Preis an Kerzen anpassen · /: Coin suchen · Alt+1…9 / Alt+←→: Tabs · Alt+W: Tab schließen
     </footer>
     <script type="module" src="/src/main.ts"></script>
   </body>

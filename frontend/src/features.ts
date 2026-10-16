@@ -35,6 +35,8 @@ export const FEATURES: Feature[] = [
     hint: "Horizontale Hilfslinien" },
   { id: "candles", label: "Kerzen", group: "chart", status: "live", defaultOn: false,
     hint: "OHLC-Kerzen über der Heatmap (1m-Basis von Binance; 3m/5m/10m daraus gebaut)" },
+  { id: "dom", label: "Orderbuch (DOM)", group: "chart", status: "live", defaultOn: true,
+    hint: "Bid/Ask je Preiszeile am rechten Bildrand (zurückgescrollt: zu diesem Zeitpunkt), gehandeltes Volumen und Delta im sichtbaren Zeitraum. Klick auf die Kopfzeile: Menge ↔ USDT" },
   { id: "rsi", label: "RSI-Fenster", group: "chart", status: "live", defaultOn: true,
     hint: "RSI(14) nach Wilder unter dem Chart, im gewählten Kerzen-Intervall; Linien bei 70 (überkauft) und 30 (überverkauft)" },
 

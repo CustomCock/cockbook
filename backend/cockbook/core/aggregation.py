@@ -11,8 +11,11 @@ Designentscheidungen
   Intervalle kann man später ein zeitgewichtetes Mittel ergänzen.
 - *Bucket = floor(price_ticks / bucket_ticks)*, rein ganzzahlig. Erst der fertige
   Bucket-Wert wird zu float32 – das ist Anzeige, kein Orderbuch-Key.
-- *Fenster um den Mid* statt fester Preisspanne: Die Spalte wandert mit dem Preis,
-  das Frontend platziert sie anhand von ``base_bucket`` absolut.
+- *Das ganze bekannte Buch* (begrenzt auf ``half_range_buckets`` je Seite um den Mid,
+  auf den tatsächlich belegten Bereich zugeschnitten) statt eines festen Fensters um den
+  Mid: Ein Fenster hat Ränder, die mit dem Kurs mitlaufen – im Chart sah es dann so aus,
+  als würde die Liquidität dem Preis folgen. Das Frontend platziert jede Spalte anhand
+  von ``base_bucket`` absolut; Spalten haben daher unterschiedliche Längen.
 - *Trades je (Seite, Bucket) zusammengefasst* mit VWAP in Ticks: aus hunderten Fills
   pro Sekunde werden wenige Bubbles; der Preis bleibt exakt (VWAP), nur die Gruppierung
   nutzt den Bucket.
@@ -166,39 +169,66 @@ class HeatmapAggregator:
         if not self.synced or bb is None or ba is None or self._bucket_ticks is None:
             return HeatmapColumn(ts_ns, False, 0, array("f"), None, None, trades, liqs)
 
-        n = 2 * self.half_range
-        center = self.bucket((bb.price_ticks + ba.price_ticks) // 2)
-        base = center - self.half_range
-        lo_ticks = base * self._bucket_ticks
-        hi_ticks = (base + n) * self._bucket_ticks - 1
-        values = array("f", bytes(4 * n))
-        bt = self._bucket_ticks
-        for side in (Side.BID, Side.ASK):
-            for lvl in self.book.range(side, lo_ticks, hi_ticks):
-                values[lvl.price_ticks // bt - base] += float(lvl.qty)
+        base, values = self._book_values(self._bucket_ticks, self.half_range, mean=False)
         return HeatmapColumn(
             ts_ns, True, base, values, bb.price_ticks, ba.price_ticks, trades, liqs
         )
+
+    def _book_values(self, size_ticks: int, half: int, *, mean: bool) -> tuple[int, array[float]]:
+        """Liquidität je Bucket der Größe ``size_ticks`` im bekannten Buch, höchstens
+        ``half`` Buckets je Seite um den Mid. ``mean``: je Tick-Bucket der Feinauflösung
+        mitteln (Dichte), damit grobe und feine Werte dieselbe Farbskala vertragen."""
+        bb, ba = self.book.best_bid(), self.book.best_ask()
+        assert bb is not None
+        assert ba is not None
+        center = ((bb.price_ticks + ba.price_ticks) // 2) // size_ticks
+        lowest, highest = self.book.extent() or (bb.price_ticks, ba.price_ticks)
+        base = max(center - half, lowest // size_ticks)
+        end = min(center + half, highest // size_ticks + 1)  # exklusiv
+        values = array("f", bytes(4 * (end - base)))
+        lo_ticks, hi_ticks = base * size_ticks, end * size_ticks - 1
+        for side in (Side.BID, Side.ASK):
+            for lvl in self.book.range(side, lo_ticks, hi_ticks):
+                values[lvl.price_ticks // size_ticks - base] += float(lvl.qty)
+        if mean and self._bucket_ticks:
+            k = size_ticks / self._bucket_ticks
+            for i, v in enumerate(values):
+                if v:
+                    values[i] = v / k
+        return base, values
+
+    def make_coarse_column(self, ts_ns: int, factor: int, half: int) -> HeatmapColumn:
+        """Momentaufnahme für die Langzeit-Heatmap: Buckets = ``factor`` feine Buckets,
+        bis ``half`` grobe Buckets je Seite (deutlich breiter als die feine Spalte)."""
+        bb, ba = self.book.best_bid(), self.book.best_ask()
+        if not self.synced or bb is None or ba is None or self._bucket_ticks is None:
+            return HeatmapColumn(ts_ns, False, 0, array("f"), None, None)
+        base, values = self._book_values(self._bucket_ticks * factor, half, mean=True)
+        return HeatmapColumn(ts_ns, True, base, values, bb.price_ticks, ba.price_ticks)
 
 
 class LongTermAccumulator:
     """Mittelt feine Heatmap-Spalten zu groben Langzeit-Spalten.
 
-    - Zeit: alle Spalten eines Langzeit-Intervalls (z. B. 20 x 100 ms = 2 s)
-    - Preis: je ``factor`` Buckets zu einem (doppelter Preisbereich bei gleicher Größe)
+    - Zeit: alle Spalten eines Langzeit-Intervalls (z. B. 50 x 100 ms = 5 s)
+    - Preis: je ``factor`` Buckets zu einem
 
     Mittelwert statt Maximum: über Sekunden zählt, wie *dauerhaft* Liquidität dort lag.
     Ein Maximum ließe jede kurz aufblitzende Order wie eine echte Wall aussehen.
-    Die grobe Spalte ist an der ersten feinen Spalte des Intervalls verankert; wandert der
-    Preis innerhalb des Intervalls, fallen Randwerte heraus (unkritisch bei 2 s).
+
+    Feine Spalten sind unterschiedlich lang (bekannter Buchbereich). Der Puffer ist daher
+    um die erste Spalte des Intervalls angelegt und auf jeder Seite um ``pad`` Buckets
+    breiter; was trotzdem herausfällt (Preis springt im Intervall um mehr als ``pad``),
+    wird ignoriert. ``take`` schneidet leere Ränder ab.
     """
 
-    def __init__(self, factor: int) -> None:
+    def __init__(self, factor: int, pad: int = 0) -> None:
         if factor < 1:
             raise ValueError("factor muss >= 1 sein")
         self.factor = factor
+        self.pad = max(pad, 0)
         self._sum: list[float] | None = None
-        self._base = 0
+        self._base = 0  # grober Bucket von _sum[0]
         self._count = 0
         self._bb: int | None = None
         self._ba: int | None = None
@@ -208,8 +238,10 @@ class LongTermAccumulator:
             return
         f = self.factor
         if self._sum is None:
-            self._base = col.base_bucket // f
-            self._sum = [0.0] * (len(col.values) // f + 2)
+            lo = (col.base_bucket - self.pad) // f
+            hi = (col.base_bucket + len(col.values) + self.pad) // f + 1
+            self._base = lo
+            self._sum = [0.0] * (hi - lo + 1)
         s = self._sum
         n = len(s)
         start = col.base_bucket
@@ -224,15 +256,18 @@ class LongTermAccumulator:
 
     def take(self, ts_ns: int) -> HeatmapColumn:
         """Liefert die grobe Spalte des abgelaufenen Intervalls und setzt zurück."""
-        if self._sum is None or self._count == 0:
+        s = self._sum
+        if s is None or self._count == 0:
             col = HeatmapColumn(ts_ns, False, 0, array("f"), None, None)
         else:
+            first = next((i for i, v in enumerate(s) if v), 0)
+            last = next((i for i in range(len(s) - 1, -1, -1) if s[i]), first - 1)
             div = self._count * self.factor  # Mittel über Zeit und zusammengefasste Buckets
             col = HeatmapColumn(
                 ts_ns,
                 True,
-                self._base,
-                array("f", (v / div for v in self._sum)),
+                self._base + first,
+                array("f", (v / div for v in s[first : last + 1])),
                 self._bb,
                 self._ba,
             )

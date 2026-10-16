@@ -6,21 +6,10 @@
  * Bedienung: Klick oder `/` öffnet, Tippen filtert, ↑/↓ + Enter wählt, Esc schließt.
  */
 
+import { CATEGORY_GROUPS, sessionClass, sessionLong, sessionText } from "./categories";
+import { athStats } from "./cycles";
 import type { Markets } from "./markets";
 import { rsiZone } from "./rsi";
-import { athStats } from "./cycles";
-
-const GROUPS: { kind: "crypto" | "tradfi"; title: string; market?: string }[] = [
-  { kind: "crypto", title: "Krypto" },
-  { kind: "tradfi", title: "Rohstoffe (TradFi)", market: "COMMODITY" },
-];
-
-const SESSION_TEXT: Record<string, string> = {
-  REGULAR: "Handel offen",
-  NO_TRADING: "Handelspause",
-  PRE_MARKET: "Vorbörse",
-  AFTER_MARKET: "Nachbörse",
-};
 
 interface Row {
   sym: string;
@@ -30,6 +19,7 @@ interface Row {
   chg: HTMLElement;
   ytd: HTMLElement;
   rsi: HTMLElement;
+  sess: HTMLElement;
 }
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string): HTMLElementTagNameMap[K] {
@@ -46,9 +36,6 @@ function pct(v: number | null): string {
 
 const updown = (v: number | null) => (v === null ? "" : v > 0 ? "up" : v < 0 ? "down" : "");
 
-function hhmm(ms: number): string {
-  return new Date(ms).toLocaleString("de-DE", { weekday: "short", hour: "2-digit", minute: "2-digit" });
-}
 
 export class CoinPicker {
   private btn: HTMLButtonElement;
@@ -121,18 +108,19 @@ export class CoinPicker {
     this.list.replaceChildren();
     this.rows = [];
     this.groupHeads.clear();
-    for (const g of GROUPS) {
-      const syms = symbols.filter((s) => (this.markets.bySymbol.get(s)?.kind ?? "crypto") === g.kind);
+    for (const g of CATEGORY_GROUPS) {
+      const syms = symbols.filter((s) => (this.markets.bySymbol.get(s)?.category ?? "crypto") === g.id);
       if (!syms.length) continue;
-      const gh = el("div", "picker-group", g.title);
-      this.groupHeads.set(g.kind, gh);
+      const gh = el("div", "picker-group", `${g.title} · ${syms.length}`);
+      this.groupHeads.set(g.id, gh);
       this.list.append(gh);
       for (const sym of syms) {
         const b = el("button", "picker-row");
         b.type = "button";
         const dot = el("span", "dot");
         const name = el("span", "sym");
-        name.append(dot, document.createTextNode(this.markets.bySymbol.get(sym)?.label ?? sym));
+        const sess = el("span", "sess");
+        name.append(dot, document.createTextNode(this.markets.bySymbol.get(sym)?.label ?? sym), sess);
         const px = el("span", "num");
         const chg = el("span", "num");
         const ytd = el("span", "num");
@@ -140,7 +128,7 @@ export class CoinPicker {
         b.append(name, px, chg, ytd, rsi);
         b.addEventListener("click", () => this.choose(sym));
         this.list.append(b);
-        this.rows.push({ sym, el: b, dot, px, chg, ytd, rsi });
+        this.rows.push({ sym, el: b, dot, px, chg, ytd, rsi, sess });
       }
     }
     this.filter();
@@ -152,10 +140,11 @@ export class CoinPicker {
     for (const r of this.rows) r.el.classList.toggle("active", r.sym === symbol);
     const m = this.markets.bySymbol.get(symbol);
     this.btnName.textContent = m?.label ?? symbol;
-    this.btnSub.textContent = `${symbol} · Binance USDⓈ-M${m?.kind === "tradfi" ? " · TradFi" : ""}`;
+    const group = CATEGORY_GROUPS.find((g) => g.id === m?.category);
+    this.btnSub.textContent = `${symbol} · Binance USDⓈ-M${m?.kind === "tradfi" ? ` · ${(group?.title ?? "TradFi").replace(" (TradFi)", "")}` : ""}`;
   }
 
-  private open(): void {
+  open(): void {
     this.pop.hidden = false;
     this.search.value = "";
     this.filter();
@@ -182,8 +171,8 @@ export class CoinPicker {
       const label = (this.markets.bySymbol.get(r.sym)?.label ?? "").toUpperCase();
       r.el.hidden = q !== "" && !r.sym.includes(q) && !label.includes(q);
     }
-    for (const [kind, gh] of this.groupHeads) {
-      gh.hidden = !this.rows.some((r) => !r.el.hidden && this.markets.bySymbol.get(r.sym)?.kind === kind);
+    for (const [cat, gh] of this.groupHeads) {
+      gh.hidden = !this.rows.some((r) => !r.el.hidden && this.markets.bySymbol.get(r.sym)?.category === cat);
     }
     this.setHighlight(q ? 0 : -1);
   }
@@ -218,16 +207,8 @@ export class CoinPicker {
       this.btnDot.className = `dot ${!s ? "" : s.synced ? "ok" : "bad"}`;
     }
     if (this.pop.hidden) return;
-    for (const g of GROUPS) {
-      const gh = this.groupHeads.get(g.kind);
-      if (!gh || !g.market) continue;
-      const sess = mk.sessions.get(g.market);
-      const text = sess ? (SESSION_TEXT[sess.session] ?? sess.session) : "Handelszeit unbekannt";
-      const until = sess?.end ? ` bis ${hhmm(sess.end)}` : "";
-      gh.textContent = `${g.title} · ${text}${until}`;
-      gh.classList.toggle("closed", sess?.session === "NO_TRADING");
-    }
     for (const r of this.rows) {
+      if (r.el.hidden) continue;
       const m = mk.bySymbol.get(r.sym);
       const price = mk.price(r.sym);
       const dec = m?.decimals ?? 2;
@@ -242,12 +223,16 @@ export class CoinPicker {
       const rsi = mk.rsi1d(r.sym, now);
       r.rsi.textContent = rsi === null ? "–" : rsi.toFixed(0);
       r.rsi.className = `num rsi ${rsiZone(rsi)}`;
+      const session = mk.session(r.sym);
+      r.sess.textContent = session ? sessionText(session) : "";
+      r.sess.className = `sess ${sessionClass(session)}`;
       const s = m?.sync;
       r.dot.className = `dot ${!s ? "" : s.synced ? "ok" : "bad"}`;
-      r.el.title = s
+      const sessTitle = m?.kind === "tradfi" ? ` · Handel: ${sessionLong(session)}` : "";
+      r.el.title = (s
         ? `${r.sym}: Orderbuch ${s.synced ? "synchron" : "NICHT synchron"} · Neu-Syncs: ${s.resyncs}` +
           (s.reason ? ` · zuletzt: ${s.reason}` : "")
-        : `${r.sym}: Orderbuch startet bei Auswahl`;
+        : `${r.sym}: Orderbuch startet bei Auswahl`) + sessTitle;
     }
   }
 }

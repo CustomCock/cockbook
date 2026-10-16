@@ -136,6 +136,10 @@ class InstrumentInfo(Event):
     step_size: Decimal
     # "crypto" oder "tradfi" (Rohstoffe/Aktien mit Handelszeiten)
     kind: str = "crypto"
+    # Feinere Einordnung: crypto | stock | etf | commodity | fx | tradfi
+    category: str = "crypto"
+    # TradFi: Markt der Handelszeiten (Name aus dem tradingSession-Stream, z. B. EQUITY)
+    market: str | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

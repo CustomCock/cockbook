@@ -31,6 +31,7 @@ exchanges:
     coverage_refresh_min_interval_s: 5  # Refresh wird eingearbeitet, ohne das Buch zu verwerfen
     liquidations_all_market: true   # Liquidationen aller Coins (sekündlich) statt nur der eigenen
     candles_1m_history: 1500        # 1m-Kerzen beim Start (max. 1500 = 25 h)
+    tradfi_categories: {EWJUSDT: etf}
     validation:
       enabled: true
       interval_s: 30              # im Simulator häufiger prüfen
@@ -52,12 +53,20 @@ aggregation:
   interval_ms: 100        # Breite einer Heatmap-Spalte
   bucket_bps: 0.06        # Preis-Bucket ~ 0.06 Basispunkte des Preises, je Symbol automatisch
                           # auf runde Tick-Vielfache gerundet (BTC ~80k -> 0.50 USDT)
-  half_range_buckets: 400 # Buckets je Seite um den Mid (BTC: 400 x 0.50 = +-200 USDT)
+  half_range_buckets: 600 # max. Buckets je Seite um den Mid (BTC: 600 x 0.50 = +-300 USDT),
+                          # zugeschnitten auf den bekannten Bereich des Orderbuchs
+  # Langzeit-Heatmap: tastet das Buch selbst ab, breiter und gröber als die Live-Heatmap
+  long_interval_ms: 5000        # eine Spalte = Mittel über 5 s
+  long_sample_ms: 500           # Abtastung des Buchs innerhalb der 5 s
+  long_bucket_factor: 4         # ein Bucket = 4 feine (BTC: 2 USDT)
+  long_half_range_buckets: 1500 # je Seite (BTC: 1500 x 2 = +-3000 USDT, zugeschnitten aufs Buch)
+  long_persist: true            # auf Platte (data/longterm), übersteht Neustarts
 
 server:
   host: 127.0.0.1         # nur Loopback erlaubt
   port: 8765
   history_columns: 3000   # Historie für neu verbundene Clients (3000 x 100 ms = 5 min)
+  long_history_columns: 4320  # Langzeit-Heatmap (4320 x 5 s = 6 h)
   client_queue_frames: 2000
 
 ui:
@@ -65,6 +74,7 @@ ui:
   bubble_px_per_sqrt_kusd: 1.2  # Bubble-Radius = sqrt(Gegenwert/1000 USDT) * Faktor
                                 # (100k USDT -> 12 px, 1 Mio. -> 38 px)
   bubble_max_px: 40
+  initial_view_buckets: 250     # Anfangs-Preisbereich je Seite um den Mid
 
 history:
   spot_rest_url: http://127.0.0.1:9876

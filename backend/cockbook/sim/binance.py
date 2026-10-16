@@ -43,9 +43,19 @@ SYMBOLS: dict[str, tuple[Decimal, int, float]] = {
     "DOGEUSDT": (Decimal("0.00001"), 20_000, 20000.0),
     "XAUUSDT": (Decimal("0.01"), 400_000, 2.0),
     "XAGUSDT": (Decimal("0.001"), 48_000, 50.0),
+    "TSLAUSDT": (Decimal("0.01"), 42_000, 20.0),
+    "NVDAUSDT": (Decimal("0.01"), 18_000, 40.0),
+    "EWJUSDT": (Decimal("0.01"), 7_500, 100.0),
 }
-# TradFi-Perps: kein Spot-Markt (Tageskerzen nur über /fapi), contractType laut Doku
-TRADFI = {"XAUUSDT", "XAGUSDT"}
+# TradFi-Perps: kein Spot-Markt (Tageskerzen nur über /fapi), contractType laut Doku;
+# Wert = underlyingType
+TRADFI = {
+    "XAUUSDT": "COMMODITY",
+    "XAGUSDT": "COMMODITY",
+    "TSLAUSDT": "EQUITY",
+    "NVDAUSDT": "EQUITY",
+    "EWJUSDT": "EQUITY",
+}
 
 
 class SimBook:
@@ -310,18 +320,16 @@ class Simulator:
     async def _session(self) -> None:
         now = int(time.time() * 1000)
         hour = now // 3_600_000 * 3_600_000
-        await self._send(
-            self.market,
-            "*ALL",
-            "tradingSession",
-            {
-                "e": "CommodityUpdate",
-                "E": now,
-                "t": hour,
-                "T": hour + 3_600_000,
-                "S": "REGULAR" if (now // 3_600_000) % 6 else "NO_TRADING",
-            },
-        )
+        for etype, session in (
+            ("CommodityUpdate", "REGULAR" if (now // 3_600_000) % 6 else "NO_TRADING"),
+            ("EquityUpdate", "OVERNIGHT"),
+        ):
+            await self._send(
+                self.market,
+                "*ALL",
+                "tradingSession",
+                {"e": etype, "E": now, "t": hour, "T": hour + 3_600_000, "S": session},
+            )
 
     def _stat_items(self, sym: str, book: SimBook) -> tuple[dict[str, Any], dict[str, Any]]:
         now = int(time.time() * 1000)
@@ -358,6 +366,7 @@ class Simulator:
                         "symbol": sym,
                         "status": "TRADING",
                         "contractType": "TRADIFI_PERPETUAL" if sym in TRADFI else "PERPETUAL",
+                        "underlyingType": TRADFI.get(sym, "COIN"),
                         "filters": [
                             {"filterType": "PRICE_FILTER", "tickSize": str(tick)},
                             {"filterType": "LOT_SIZE", "stepSize": "0.001"},

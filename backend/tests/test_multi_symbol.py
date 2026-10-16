@@ -70,7 +70,8 @@ def test_aggregator_fixes_bucket_on_first_snapshot() -> None:
     assert agg.bucket_ticks == 2
     col = agg.make_column(0)
     assert col.synced
-    assert len(col.values) == 20
+    assert len(col.values) == 2  # nur der belegte Bereich des Buchs
+    assert col.base_bucket == 149_999
 
 
 def test_parse_market_stats() -> None:

@@ -4,7 +4,7 @@
  */
 
 import type { DailyRow } from "./cycles";
-import type { StatFrame, SymbolInfo } from "./net";
+import type { Category, StatFrame, SymbolInfo } from "./net";
 import { lastRsi } from "./rsi";
 
 export interface Liq {
@@ -31,6 +31,9 @@ export interface MarketState {
   daily?: DailyRow[];
   sync?: Extract<StatFrame, { t: "sync" }>;
   kind: "crypto" | "tradfi";
+  category: Category;
+  /** TradFi: Markt der Handelszeiten (Schlüssel in `Markets.sessions`) */
+  market: string | null;
   label: string;
 }
 
@@ -58,7 +61,7 @@ export class Markets {
   ensure(symbol: string, tickSize?: string): MarketState {
     let m = this.bySymbol.get(symbol);
     if (!m) {
-      m = { symbol, tickSize: null, decimals: 2, oiHist: [], kind: "crypto", label: symbol.replace(/USDT$/, "") };
+      m = { symbol, tickSize: null, decimals: 2, oiHist: [], kind: "crypto", category: "crypto", market: null, label: symbol.replace(/USDT$/, "") };
       this.bySymbol.set(symbol, m);
     }
     if (tickSize) {
@@ -71,6 +74,9 @@ export class Markets {
   setInfo(info: SymbolInfo): void {
     const m = this.ensure(info.symbol, info.tick_size);
     if (info.kind) m.kind = info.kind;
+    if (info.category) m.category = info.category;
+    else if (info.kind === "tradfi") m.category = "tradfi";
+    if (info.market) m.market = info.market;
     if (info.label) m.label = info.label;
   }
 
@@ -135,6 +141,12 @@ export class Markets {
       const l = this.liqs.pop()!;
       this.liqKeys.delete(`${l.sym}|${l.ts}|${l.side}|${l.price}|${l.qty}`);
     }
+  }
+
+  /** Handelszeit eines TradFi-Symbols (null = Krypto oder unbekannt). */
+  session(symbol: string): Session | null {
+    const market = this.bySymbol.get(symbol)?.market;
+    return market ? (this.sessions.get(market) ?? null) : null;
   }
 
   /** Letzter Preis: Ticker, sonst Mark-Preis. */

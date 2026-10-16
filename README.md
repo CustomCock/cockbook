@@ -1,8 +1,8 @@
 # CockBook
 
-> **Status: Work in Progress** – Liquidity-Heatmap (live + Langzeit) mit Trades, Kerzen und RSI (WebGL)
-> für die Top-20-Coins sowie Gold und Silber (Binance USDⓈ-M), Seitenleiste mit Derivate-Kennzahlen.
-> DOM, CVD, Alerts, Replay usw. folgen.
+> **Status: Work in Progress** – Liquidity-Heatmap (live + Langzeit) mit Trades, Kerzen, RSI und
+> DOM-Ladder (WebGL) für die Top-20-Coins sowie alle TradFi-Kontrakte von Binance USDⓈ-M (Aktien, ETFs,
+> Rohstoffe), Coin-Tabs, Seitenleiste mit Derivate-Kennzahlen. CVD, Alerts, Replay usw. folgen.
 
 Freies, lokal laufendes Orderflow- & Liquidity-Heatmap-Tool für Krypto-Märkte, inspiriert von Bookmap.
 Es nutzt ausschließlich öffentliche, kostenlose Börsen-Datenfeeds und läuft unter Ubuntu und Windows.
@@ -55,12 +55,21 @@ make dev       # Backend + Frontend-Dev-Server (http://127.0.0.1:5173)
 make dev       # Binance-Livedaten -> Backend (ws://127.0.0.1:8765) + Frontend http://127.0.0.1:5173
 ```
 
-Coins werden oben links im **Dropdown** gewählt (Klick oder Taste `/`, Tippen filtert, ↑/↓ + Enter).
-Die Liste zeigt je Coin Preis, 24h, Veränderung seit 1. Januar, RSI auf Tageskerzen und den
-Orderbuch-Status (Punkt); Gold und Silber stehen unter „Rohstoffe (TradFi)“ mit ihrer Handelszeit.
-Die Coins stehen in `config.yaml` unter `symbols` (Standard: Top 20 nach Marktkapitalisierung ohne
-Stablecoins, dazu XAUUSDT und XAGUSDT). Symbole, die es auf Binance USDⓈ-M nicht gibt, werden mit
-einer Warnung übersprungen.
+Coins werden oben links im **Dropdown** gewählt (Klick, Taste `/` oder `+` in der Tab-Leiste; Tippen
+filtert, ↑/↓ + Enter). Die Liste ist gruppiert in **Krypto, Aktien, ETFs, Rohstoffe, Devisen** und zeigt
+je Coin Preis, 24h, Veränderung seit 1. Januar, RSI auf Tageskerzen, den Orderbuch-Status (Punkt) und
+bei TradFi die aktuelle Handelsphase (offen, Vorbörse, Nachthandel, geschlossen).
+
+Jeder gewählte Coin öffnet einen **Tab** (wie im Browser): Klick wechselt, `×` oder Mittelklick
+schließt, Ziehen sortiert um; `Alt+1…9`, `Alt+←/→`, `Alt+W`. Die zuletzt benutzten Coins bleiben samt
+Heatmap im Speicher, der Wechsel zurück ist sofort da. Die Tabs werden im Browser gespeichert.
+
+Krypto-Coins stehen in `config.yaml` unter `symbols` (Standard: Top 20 nach Marktkapitalisierung ohne
+Stablecoins, dazu Gold und Silber). **Aktien-, ETF-, Rohstoff- und Devisen-Kontrakte** (Binance
+„TradFi-Perpetuals“, z. B. TSLA, NVDA, EWJ, Öl) werden automatisch aus der Börse übernommen
+(`tradfi_auto_discover`). Binance unterscheidet ETFs nicht sicher von Aktien – welche Symbole als ETF
+einsortiert werden, steht unter `tradfi_categories` und lässt sich ergänzen. Symbole, die es auf
+Binance USDⓈ-M nicht gibt, werden mit einer Warnung übersprungen.
 
 Kennzahlen (Preis, 24h, Funding …) kommen für alle Coins über Gesamtmarkt-Streams. Das **Orderbuch**
 (Heatmap) läuft ab Start nur für Coins mit `always_on: true` (Standard: BTC, ETH, XRP, SOL); jeder andere
@@ -71,10 +80,19 @@ kommen keine Orderbuch-Updates.
 Die Seitenleiste enthält alle Funktionen zum Ein-/Ausschalten (gelten für alle Coins):
 
 - **Chart:** Liquidity-Heatmap, Langzeit-Heatmap, Weich zeichnen, Trade-Bubbles, Best Bid/Ask,
-  Liquidationen, Preisgitter, Kerzen (1m/3m/5m/10m), RSI-Fenster unter dem Chart
-- **Langzeit-Heatmap:** ältere Liquidität (bis 2 h) als gröbere Ebene unter der Live-Heatmap
-  (Mittel über 2 s und je 2 Preis-Stufen) – sichtbar beim Herauszoomen in der Zeit (Shift+Mausrad)
-  oder Zurückziehen. Die Live-Heatmap hat volle Auflösung für die letzten 5 min.
+  Liquidationen, Preisgitter, Kerzen (1m/3m/5m/10m), Orderbuch (DOM), RSI-Fenster unter dem Chart
+- **Heatmap:** zeigt das ganze bekannte Orderbuch (bis ±600 Preis-Stufen um den Kurs), Liquidität
+  bleibt an ihrem Preis stehen. Wo das Buch nicht bekannt ist (weit weg vom Kurs, vor dem Start), bleibt
+  der Hintergrund leer.
+- **Langzeit-Heatmap:** die letzten 6 h als gröbere, breitere Ebene unter der Live-Heatmap (Mittel über
+  5 s, je 4 Preis-Stufen, bis ±1500 grobe Stufen). Sie wird unter `data/longterm/` gespeichert und
+  übersteht Neustarts. Sichtbar beim Herauszoomen in der Zeit (Shift+Mausrad) oder Zurückziehen; eine
+  gestrichelte Linie markiert den Übergang „Langzeit | Live“, oben rechts steht, wie weit beide
+  zurückreichen. Die Live-Heatmap hat volle Auflösung (100 ms) für die letzten ~5 min.
+- **Orderbuch (DOM):** rechts neben der Preisachse, auf derselben Preisachse wie die Heatmap: Bid/Ask je
+  Preiszeile (zurückgescrollt: zum betrachteten Zeitpunkt), gehandeltes Volumen (Kauf/Verkauf) und
+  Delta im sichtbaren Zeitraum. Zeilen fassen je nach Zoom 1, 2, 5, 10 … Stufen zusammen. Klick auf die
+  DOM-Kopfzeile schaltet Menge ↔ USDT um.
 - **ATH & Zyklen:** Allzeithoch, Abstand, Tage seit ATH, 52-Wochen-Spanne; Marktzyklus (Halving-Zyklen
   oder eigener Zeitraum) mit Länge, Fortschritt, Zyklus-Hoch/-Tief und Performance
 - **Indikatoren:** RSI(14) nach Wilder für 1m, 5m, 15m, 1h und 1D; im RSI-Fenster im Intervall der Kerzen
@@ -85,7 +103,7 @@ Die Seitenleiste enthält alle Funktionen zum Ein-/Ausschalten (gelten für alle
 
 Bedienung: Mausrad = Preis-Zoom, Shift+Mausrad (oder Mausrad über der Zeitachse) = Zeit-Zoom,
 Ziehen = verschieben (auch zurück in der Zeit), Doppelklick oder `C` = zurück zu Live mit
-Auto-Zentrierung, `F` = Preisbereich an die sichtbaren Kerzen anpassen, `/` = Coin suchen. Regler „Kontrast“ und „Schwelle“ steuern die Farbskala; Einstellungen werden
+Auto-Zentrierung, `F` = Preisbereich an die sichtbaren Kerzen anpassen, `/` = Coin suchen, `Alt+1…9` / `Alt+←→` = Tabs, `Alt+W` = Tab schließen. Regler „Kontrast“ und „Schwelle“ steuern die Farbskala; Einstellungen werden
 im Browser gespeichert.
 
 Ohne GPU (z. B. in einer VM) rendert der Browser per Software. CockBook erkennt das und

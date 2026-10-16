@@ -92,6 +92,12 @@ class BinanceUsdmConfig(_Model):
     # TradFi-Kontrakte (Gold, Silber, …) haben Handelspausen: dann kommen minutenlang keine
     # Orderbuch-Updates. Längere Frist, sonst würde ständig neu verbunden.
     tradfi_stale_timeout_s: Annotated[float, Field(gt=0)] = 900.0
+    # Alle TradFi-Kontrakte (Aktien, ETFs, Rohstoffe, Devisen) automatisch aus der
+    # exchangeInfo übernehmen – zusätzlich zu ``symbols``. Orderbuch erst bei Auswahl.
+    tradfi_auto_discover: bool = True
+    # Kategorie erzwingen (Symbol -> stock | etf | commodity | fx). Nötig für ETFs:
+    # Binance kennzeichnet sie in der exchangeInfo nicht sicher von Aktien unterscheidbar.
+    tradfi_categories: dict[str, str] = Field(default_factory=dict)
     validation: BookValidationConfig = Field(default_factory=BookValidationConfig)
     metrics: MetricsConfig = Field(default_factory=MetricsConfig)
     reconnect: ReconnectConfig = Field(default_factory=ReconnectConfig)
@@ -103,15 +109,22 @@ type ExchangeConfig = BinanceUsdmConfig
 class AggregationConfig(_Model):
     interval_ms: Annotated[int, Field(ge=10)] = 100  # eine Heatmap-Spalte
     # Langzeit-Heatmap: gröbere Spalten (Mittelwert über die Zeit) für weites Herauszoomen
-    long_interval_ms: Annotated[int, Field(ge=200)] = 2000
-    # Langzeit: je n Preis-Buckets zusammengefasst (Mittelwert) -> doppelter Preisbereich
-    long_bucket_factor: Annotated[int, Field(ge=1, le=8)] = 2
+    long_interval_ms: Annotated[int, Field(ge=200)] = 5000
+    # Langzeit: ein Bucket = n feine Buckets (Wert = Mittel je feinem Bucket)
+    long_bucket_factor: Annotated[int, Field(ge=1, le=16)] = 4
+    # Langzeit: grobe Buckets je Seite um den Mid (viel breiter als die feine Spalte)
+    long_half_range_buckets: Annotated[int, Field(gt=0, le=5000)] = 1500
+    # Langzeit: so oft wird das Buch innerhalb eines Intervalls abgetastet
+    long_sample_ms: Annotated[int, Field(ge=100)] = 500
+    # Langzeit-Spalten auf Platte (data_dir/longterm), damit sie Neustarts überstehen
+    long_persist: bool = True
     # Preis-Bucket automatisch je Symbol: Bucket ~ Mid * bucket_bps / 10000, auf ein
     # "rundes" Vielfaches der Tick-Größe gerundet (1, 2, 5, 10, 20, …), mindestens 1 Tick.
     # Damit sehen BTC (Tick 0.10) und XRP (Tick 0.0001) gleich "dicht" aus.
     bucket_bps: Annotated[float, Field(gt=0)] = 0.06
-    # Buckets je Seite um den Mid, die pro Spalte gesendet werden
-    half_range_buckets: Annotated[int, Field(gt=0, le=1000)] = 400
+    # Höchstens so viele Buckets je Seite um den Mid pro Spalte (zugeschnitten auf den
+    # bekannten Bereich des Orderbuchs)
+    half_range_buckets: Annotated[int, Field(gt=0, le=2000)] = 600
 
 
 class ServerConfig(_Model):
@@ -119,8 +132,8 @@ class ServerConfig(_Model):
     port: Annotated[int, Field(gt=0, lt=65536)] = 8765
     # So viele Spalten bekommt ein neu verbundener Client als Historie (100 ms -> 5 min)
     history_columns: Annotated[int, Field(ge=0)] = 3000
-    # Langzeit-Heatmap-Historie (2 s -> 3600 = 2 h)
-    long_history_columns: Annotated[int, Field(ge=0)] = 3600
+    # Langzeit-Heatmap-Historie (5 s -> 4320 = 6 h)
+    long_history_columns: Annotated[int, Field(ge=0, le=16000)] = 4320
     # Sendepuffer je Client; ein langsamer Client verliert die ältesten Frames
     client_queue_frames: Annotated[int, Field(gt=0)] = 2000
 
@@ -142,6 +155,8 @@ class UiConfig(_Model):
     # In USDT statt Basis-Menge, damit Bubbles über alle Coins vergleichbar sind.
     bubble_px_per_sqrt_kusd: Annotated[float, Field(gt=0)] = 1.2
     bubble_max_px: Annotated[float, Field(gt=0)] = 40.0
+    # Anfangs-Preisbereich der Ansicht: so viele Buckets je Seite um den Mid
+    initial_view_buckets: Annotated[int, Field(gt=0)] = 250
 
 
 class HistoryConfig(_Model):
@@ -153,6 +168,8 @@ class HistoryConfig(_Model):
     futures_rest_url: str = "https://fapi.binance.com"
     start: str = "2017-01-01"  # frühestes Datum; Binance-Spot beginnt im August 2017
     refresh_s: Annotated[float, Field(ge=60)] = 3600.0
+    # Pause zwischen nachgeladenen Symbolen (schont das REST-Gewichtslimit)
+    pace_s: Annotated[float, Field(ge=0)] = 0.5
 
 
 class RecorderConfig(_Model):

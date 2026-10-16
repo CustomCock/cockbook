@@ -24,8 +24,8 @@ Kennzahl-Frames (an alle Clients, Seitenleiste zeigt alle Coins):
 ``sess``  {sym: Markt, ts, session, start, end}  TradFi-Handelszeit (z. B. COMMODITY)
 ``sync`` {sym, ts, synced, resyncs, reason}  Orderbuch-Diagnose je Coin
 
-Langzeit-Heatmap im Symbol-Kanal: ``cc`` = grobe Spalte {t, sym, ts, s, b, q, bb, ba}
-(Buckets = ``long_bucket_factor`` feine Buckets, Mittelwert über ``long_interval_ms``).
+Langzeit-Heatmap im Symbol-Kanal: ``cc`` = grobe Spalte {t, sym, bt, f, ts, s, b, q, bb, ba}
+(Bucket = ``f`` feine Buckets, Wert = Mittel je feinem Bucket über ``long_interval_ms``).
 
 Kerzen-Frames im Symbol-Kanal: ``kh`` = 1m-Historie (beim Abo), ``k`` = laufende 1m-Kerze
 {sym, x: [t, o, h, l, c, v, closed]}. 3m/5m/10m baut das Frontend aus 1m.
@@ -124,11 +124,17 @@ def encode_column(symbol: str, col: HeatmapColumn) -> list[bytes]:
     return frames
 
 
-def encode_long_column(symbol: str, col: HeatmapColumn) -> bytes:
+def encode_long_column(
+    symbol: str, col: HeatmapColumn, bucket_ticks: int = 0, factor: int = 1
+) -> bytes:
+    """``bt``/``f``: feine Bucket-Größe in Ticks und Faktor – nötig, um gespeicherte
+    Spalten nach einem Neustart nur bei gleicher Skalierung wiederzuverwenden."""
     return _pack(
         {
             "t": "cc",
             "sym": symbol,
+            "bt": bucket_ticks,
+            "f": factor,
             "ts": col.ts_ns // _NS_PER_MS,
             "s": col.synced,
             "b": col.base_bucket,

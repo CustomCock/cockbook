@@ -80,3 +80,26 @@ def test_trades_kept_even_when_not_synced() -> None:
 def test_invalid_params() -> None:
     with pytest.raises(ValueError, match="> 0"):
         HeatmapAggregator(bucket_ticks=0, half_range_buckets=1)
+
+
+def test_column_covers_known_book_not_a_window_around_mid() -> None:
+    """Liquidität bleibt an ihrem Preis: bewegt sich nur der Mid, ändert sich nichts an
+    den Werten weit entfernter Level (früher lag dort der mitlaufende Fensterrand)."""
+    a = synced_agg(bucket_ticks=5, half=100)
+    col = a.make_column(0)
+    assert col.base_bucket == 12  # niedrigster Bid 60 -> Bucket 12
+    assert len(col.values) == 25 - 12 + 1  # bis höchster Ask 125 -> Bucket 25
+    before = {col.base_bucket + i: v for i, v in enumerate(col.values) if v}
+    # Mid springt nach oben (Asks weggekauft), die Wall bei 80 und die Level bei 60 bleiben
+    a.on_event(BookDelta(**C, bids=lv((110, "1")), asks=lv((100, "0"), (104, "0"), (115, "2")),
+                         first_seq=2, last_seq=2))  # fmt: skip
+    after_col = a.make_column(1)
+    after = {after_col.base_bucket + i: v for i, v in enumerate(after_col.values) if v}
+    assert after[16] == before[16] == 100.0
+    assert after[12] == before[12] == 7.0
+
+
+def test_column_capped_at_half_range() -> None:
+    col = synced_agg(bucket_ticks=5, half=2).make_column(0)
+    assert col.base_bucket == 17  # center 19 - 2
+    assert len(col.values) == 4  # 17..20 (Ask-Seite endet bei Bucket 25, gekappt bei 21)

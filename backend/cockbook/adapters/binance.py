@@ -311,6 +311,67 @@ def is_tradfi(symbol_entry: dict[str, Any]) -> bool:
     return str(symbol_entry.get("contractType", "")).upper() == "TRADIFI_PERPETUAL"
 
 
+# underlyingType der TradFi-Kontrakte -> Markt im tradingSession-Stream
+# (EquityUpdate -> EQUITY, KR_EquityUpdate -> KR_EQUITY, …). PREMARKET = US-Aktien vor
+# dem Börsengang/Pre-Market-Kontrakte, gehören zu den US-Handelszeiten.
+_TRADFI_MARKETS = {
+    "EQUITY": "EQUITY",
+    "PREMARKET": "EQUITY",
+    "KR_EQUITY": "KR_EQUITY",
+    "HK_EQUITY": "HK_EQUITY",
+    "CN_EQUITY": "CN_EQUITY",
+    "COMMODITY": "COMMODITY",
+    "FX": "FX",
+}
+CATEGORIES = ("crypto", "stock", "etf", "commodity", "fx", "tradfi")
+
+
+def classify(
+    symbol_entry: dict[str, Any], overrides: dict[str, str] | None = None
+) -> tuple[str, str, str | None]:
+    """(kind, category, market) eines Symbols aus der exchangeInfo.
+
+    ``underlyingType`` unterscheidet Aktien (``*EQUITY``), Rohstoffe (``COMMODITY``) und
+    Devisen (``FX``). ETFs laufen bei Binance ebenfalls als Aktien-Underlying; erkannt
+    werden sie über ``underlyingSubType`` (falls dort "ETF" steht) oder die Config.
+    """
+    sym = str(symbol_entry.get("symbol", ""))
+    if not is_tradfi(symbol_entry):
+        return "crypto", "crypto", None
+    ut = str(symbol_entry.get("underlyingType", "")).upper()
+    subs = {str(x).upper() for x in symbol_entry.get("underlyingSubType") or []}
+    market = _TRADFI_MARKETS.get(ut)
+    if overrides and sym in overrides:
+        category = overrides[sym]
+    elif "ETF" in subs:
+        category = "etf"
+    elif ut.endswith("EQUITY") or ut == "PREMARKET":
+        category = "stock"
+    elif ut == "COMMODITY":
+        category = "commodity"
+    elif ut == "FX":
+        category = "fx"
+    else:
+        category = "tradfi"
+    return "tradfi", category, market
+
+
+def instrument_info(
+    entry: dict[str, Any], inst: Instrument, recv_ns: int, overrides: dict[str, str] | None
+) -> InstrumentInfo:
+    kind, category, market = classify(entry, overrides)
+    return InstrumentInfo(
+        exchange=EXCHANGE,
+        symbol=inst.symbol,
+        ts_recv_ns=recv_ns,
+        tick_size=inst.tick_size,
+        step_size=inst.step_size,
+        kind=kind,
+        category=category,
+        market=market,
+    )
+
+
 def parse_instruments(exchange_info: dict[str, Any]) -> dict[str, Instrument]:
     """Alle Symbole der exchangeInfo (für den Liquidations-Stream des Gesamtmarkts)."""
     out: dict[str, Instrument] = {}
@@ -883,14 +944,7 @@ class BinanceUsdmAdapter:
             await self._publish(
                 [
                     self._raw("rest:exchangeInfo", json.dumps(sym_entry), now),
-                    InstrumentInfo(
-                        exchange=EXCHANGE,
-                        symbol=self.symbol,
-                        ts_recv_ns=now,
-                        tick_size=inst.tick_size,
-                        step_size=inst.step_size,
-                        kind="tradfi" if tradfi else "crypto",
-                    ),
+                    instrument_info(sym_entry, inst, now, self.cfg.tradfi_categories),
                 ]
             )
             self.sync = BinanceDepthSync(
@@ -1273,9 +1327,13 @@ class BinanceMarketStats:
 
     name = f"{EXCHANGE}:stats"
 
-    def __init__(self, cfg: BinanceUsdmConfig, symbols: list[str], bus: EventBus) -> None:
+    def __init__(
+        self, cfg: BinanceUsdmConfig, symbols: list[str], bus: EventBus, *, discover: bool = True
+    ) -> None:
         self.cfg = cfg
         self.wanted = [s.upper() for s in symbols]
+        self.discover = discover
+        self.discovered: list[str] = []
         self.bus = bus
         self.available: dict[str, Instrument] = {}
         self.ready = asyncio.Event()
@@ -1291,6 +1349,16 @@ class BinanceMarketStats:
             entries = {s["symbol"]: s for s in data["symbols"]}
             instruments = parse_instruments(data)
             now = time.time_ns()
+            if self.cfg.tradfi_auto_discover and self.discover:
+                known = set(self.wanted)
+                found = sorted(
+                    sym
+                    for sym, e in entries.items()
+                    if is_tradfi(e) and e.get("status") == "TRADING" and sym not in known
+                )
+                self.discovered = found
+                self.wanted = self.wanted + found
+                log.info("tradfi contracts discovered", extra={"count": len(found)})
             for sym in self.wanted:
                 entry = entries.get(sym)
                 if entry is None or sym not in instruments or entry.get("status") != "TRADING":
@@ -1302,14 +1370,7 @@ class BinanceMarketStats:
                 inst = instruments[sym]
                 self.available[sym] = inst
                 await self.bus.publish(
-                    InstrumentInfo(
-                        exchange=EXCHANGE,
-                        symbol=sym,
-                        ts_recv_ns=now,
-                        tick_size=inst.tick_size,
-                        step_size=inst.step_size,
-                        kind="tradfi" if is_tradfi(entry) else "crypto",
-                    )
+                    instrument_info(entry, inst, now, self.cfg.tradfi_categories)
                 )
             self.ready.set()
             log.info(

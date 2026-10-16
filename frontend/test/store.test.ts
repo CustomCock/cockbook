@@ -74,9 +74,26 @@ describe("HeatmapStore", () => {
     expect(Number.isNaN(s.bestBid[s.latest]!)).toBe(true);
   });
 
-  it("rowsFor: Zweierpotenz, mind. 4x Spaltenhöhe, begrenzt durch Texturgröße", () => {
-    expect(rowsFor(400, 16384)).toBe(2048);
-    expect(rowsFor(100, 16384)).toBe(1024);
+  it("rowsFor: Zweierpotenz, mind. 2.5x halbe Spaltenhöhe, begrenzt", () => {
+    expect(rowsFor(600, 16384)).toBe(2048);
+    expect(rowsFor(100, 16384)).toBe(512);
     expect(rowsFor(1000, 2048)).toBe(2048);
+    expect(rowsFor(1500, 16384, 2048)).toBe(2048);
+  });
+
+  it("füllt Zeitlücken mit Lücken-Spalten (Zeitachse bleibt korrekt)", () => {
+    const s = new HeatmapStore(8, 16, 100);
+    s.pushColumn(1000, true, 100, col(1));
+    s.pushColumn(1400, true, 100, col(2)); // 3 Spalten fehlen
+    expect(s.count).toBe(5);
+    expect(s.valueAt(0, 100)).toBe(2);
+    expect(s.valueAt(4, 100)).toBe(1);
+    expect(s.synced[s.indexAgo(2)]).toBe(2);
+    expect(s.ts[s.indexAgo(1)]).toBe(1300);
+    expect(s.oldestTs).toBe(1000);
+    s.pushColumn(100_000, true, 100, col(3)); // riesige Lücke: höchstens ein Ring voll
+    expect(s.count).toBe(8);
+    expect(s.ts[s.indexAgo(7)]).toBe(100_000 - 7 * 100);
+    expect(s.fullDirty).toBe(true);
   });
 });

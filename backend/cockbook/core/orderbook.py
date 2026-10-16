@@ -111,6 +111,12 @@ class OrderBook:
         book = self._bids if side is Side.BID else self._asks
         return [PriceLevel(p, book[p]) for p in book.irange(lo, hi)]
 
+    def extent(self) -> tuple[int, int] | None:
+        """(niedrigster Bid, höchster Ask) in Ticks = bekannter Preisbereich des Buchs."""
+        if not self._bids or not self._asks:
+            return None
+        return self._bids.peekitem(0)[0], self._asks.peekitem(-1)[0]
+
     def is_crossed(self) -> bool:
         bb, ba = self.best_bid(), self.best_ask()
         return bb is not None and ba is not None and bb.price_ticks >= ba.price_ticks

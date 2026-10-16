@@ -50,7 +50,7 @@ def build_sources(
             wanted = [s.symbol for s in ex.symbols]
             if only_symbol is not None:
                 wanted = [only_symbol.upper()]
-            extra.append(BinanceMarketStats(ex, wanted, bus))
+            extra.append(BinanceMarketStats(ex, wanted, bus, discover=only_symbol is None))
             if ex.liquidations_all_market:
                 extra.append(BinanceLiquidationStream(ex, bus))
     symbols = configured_symbols(cfg) if only_symbol is None else [only_symbol.upper()]
@@ -87,6 +87,10 @@ class SourceManager:
         for ex in self.cfg.exchanges:
             if ex.enabled and any(s.symbol.upper() == symbol for s in ex.symbols):
                 return ex
+        # automatisch gefundene TradFi-Kontrakte
+        for src in self.sources:
+            if isinstance(src, BinanceMarketStats) and symbol in src.available:
+                return src.cfg
         return None
 
     def activate(self, symbol: str) -> None:
@@ -130,12 +134,32 @@ class SourceManager:
         all_sources = build_sources(self.cfg, self.bus, only_symbol=self._only, always_on_only=True)
         return [s for s in all_sources if not isinstance(s, BinanceUsdmAdapter)]
 
+    async def _history_for_discovered(self, stop: asyncio.Event) -> None:
+        """Tageskerzen auch für automatisch gefundene TradFi-Kontrakte laden."""
+        stats = [s for s in self.sources if isinstance(s, BinanceMarketStats)]
+        history = [s for s in self.sources if isinstance(s, BinanceDailyHistory)]
+        if not stats or not history:
+            return
+        for st in stats:
+            ready = asyncio.ensure_future(st.ready.wait())
+            stopped = asyncio.ensure_future(stop.wait())
+            try:
+                await asyncio.wait({ready, stopped}, return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                ready.cancel()
+                stopped.cancel()
+            if stop.is_set():
+                return
+            for h in history:
+                h.add_symbols(st.discovered, futures_only=True)
+
     async def run(self, stop: asyncio.Event) -> None:
         self.sources = self._market_sources()
         async with asyncio.TaskGroup() as tg:
             self._tg = tg
             for src in self.sources:
                 tg.create_task(self._guard(src), name=f"source:{src.name}")
+            tg.create_task(self._history_for_discovered(stop))
             for sym in self._initial_symbols():
                 self.activate(sym)
             await stop.wait()

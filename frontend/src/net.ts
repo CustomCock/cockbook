@@ -13,8 +13,15 @@ export interface Hello {
   /** Langzeit-Heatmap: Spaltenbreite und feine Buckets je grobem Bucket */
   long_interval_ms?: number;
   long_bucket_factor?: number;
+  long_half_range_buckets?: number;
+  long_history_columns?: number;
   half_range_buckets: number;
-  ui: { recenter_margin: number; bubble_px_per_sqrt_kusd: number; bubble_max_px: number };
+  ui: {
+    recenter_margin: number;
+    bubble_px_per_sqrt_kusd: number;
+    bubble_max_px: number;
+    initial_view_buckets?: number;
+  };
 }
 
 export interface Status {
@@ -29,8 +36,14 @@ export interface SymbolInfo {
   exchange?: string;
   tick_size?: string;
   kind?: "crypto" | "tradfi";
+  /** crypto | stock | etf | commodity | fx | tradfi */
+  category?: Category;
+  /** TradFi: Markt der Handelszeiten (z. B. EQUITY, COMMODITY) */
+  market?: string;
   label?: string;
 }
+
+export type Category = "crypto" | "stock" | "etf" | "commodity" | "fx" | "tradfi";
 
 export interface Symbols {
   type: "symbols";
@@ -92,7 +105,8 @@ export function toFloat32(bytes: Uint8Array): Float32Array {
 }
 
 export interface Connection {
-  subscribe(symbol: string): void;
+  /** `since`/`sinceLong`: bis hier liegen Spalten schon im Speicher (nur Rest senden) */
+  subscribe(symbol: string, since?: number | null, sinceLong?: number | null): void;
   close(): void;
 }
 
@@ -135,7 +149,12 @@ export function connect(url: string, h: Handlers, initialSymbol: () => string | 
   };
   open();
   return {
-    subscribe: (symbol: string) => send({ type: "subscribe", symbol }),
+    subscribe: (symbol: string, since?: number | null, sinceLong?: number | null) => {
+      const msg: Record<string, unknown> = { type: "subscribe", symbol };
+      if (since != null) msg.since = since;
+      if (sinceLong != null) msg.since_long = sinceLong;
+      send(msg);
+    },
     close: () => {
       closed = true;
       ws?.close();

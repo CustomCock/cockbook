@@ -41,7 +41,9 @@ body {
   padding: 6px 12px;
   background: var(--panel);
   border-bottom: 1px solid var(--line);
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+  overflow: hidden;
 }
 
 
@@ -98,9 +100,18 @@ button:hover {
   border-color: var(--accent);
 }
 
-#perf {
+#ltinfo {
   margin-left: auto;
   color: var(--muted);
+  font-size: 11px;
+}
+
+#perf {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--muted);
+  font-size: 11px;
 }
 
 #layout {
@@ -656,4 +667,206 @@ button:hover {
 
 .rsi-mark.oversold {
   background: var(--up);
+}
+
+/* --- Tabs ---------------------------------------------------------------------------- */
+
+#main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+#tabs {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  padding: 5px 8px 0;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+
+.tabs-list {
+  display: flex;
+  gap: 2px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.tabs-list::-webkit-scrollbar {
+  display: none;
+}
+
+.tab {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: none;
+  max-width: 260px;
+  padding: 6px 6px 6px 11px;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 8px 8px 0 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.tab:hover {
+  background: var(--panel-2);
+  color: var(--fg);
+}
+
+.tab.active {
+  position: relative;
+  background: var(--plot);
+  border-color: var(--line);
+  color: var(--fg);
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+
+/* Aktiver Tab geht nahtlos in den Chart über */
+.tab.active::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 1px;
+  background: var(--plot);
+}
+
+.tab.dragging {
+  opacity: 0.5;
+}
+
+.tab .dot {
+  margin-right: 0;
+}
+
+.tab-name {
+  font-weight: bold;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tab-px,
+.tab-chg {
+  font-size: 11.5px;
+}
+
+.tab-close {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  line-height: 18px;
+  cursor: pointer;
+  opacity: 0.6;
+}
+
+.tab:hover .tab-close,
+.tab.active .tab-close {
+  opacity: 1;
+}
+
+.tab-close:hover {
+  background: var(--line);
+  color: var(--fg);
+}
+
+.tab-add {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  margin-bottom: 3px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 16px;
+  cursor: pointer;
+}
+
+.tab-add:hover {
+  background: var(--panel-2);
+  border-color: var(--line);
+  color: var(--fg);
+}
+
+/* TradFi-Handelszeit am Punkt: offen = normal, Vor-/Nachbörse = Ring, geschlossen = grau */
+.dot.sess-closed {
+  background: #5a5d63;
+  box-shadow: none;
+}
+
+.dot.sess-ext {
+  outline: 1.5px solid var(--liq-long);
+  outline-offset: 1px;
+}
+
+/* Handelszeit im Coin-Menü */
+.sess {
+  margin-left: 6px;
+  font-size: 9.5px;
+  font-weight: normal;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.sess.open {
+  color: var(--up);
+}
+
+.sess.ext {
+  color: var(--liq-long);
+}
+
+.sess.closed {
+  color: #7a7e85;
+}
+
+/* --- Grenze Langzeit | Live ------------------------------------------------------------ */
+
+#ltmark {
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: none;
+  width: 0;
+  border-left: 1px dashed rgba(220, 224, 230, 0.35);
+  pointer-events: none;
+}
+
+#ltmark span {
+  position: absolute;
+  top: 6px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: rgba(30, 31, 34, 0.75);
+  color: var(--muted);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+#ltmark .lt-l {
+  right: 4px;
+}
+
+#ltmark .lt-r {
+  left: 4px;
+}
+
+#dom {
+  cursor: default;
 }

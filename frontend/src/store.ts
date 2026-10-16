@@ -32,6 +32,7 @@ export class HeatmapStore {
   readonly ts: Float64Array;
   readonly bestBid: Float64Array; // in Ticks, NaN = unbekannt
   readonly bestAsk: Float64Array;
+  /** 1 = synchron, 0 = Orderbuch nicht synchron, 2 = Lücke (keine Daten empfangen) */
   readonly synced: Uint8Array;
   readonly trades: (TradeBin[] | null)[];
   readonly liqs: (LiqMark[] | null)[];
@@ -44,7 +45,16 @@ export class HeatmapStore {
   fullDirty = true;
   private initialized = false;
 
-  constructor(cols: number, rows: number) {
+  /**
+   * `intervalMs` > 0: Zeitlücken (z. B. Backend war aus, Langzeit-Spalten aus dem Archiv,
+   * Tab lange nicht offen) mit leeren Lücken-Spalten füllen. Der Puffer rechnet
+   * "Spalte k = k Intervalle zurück" – ohne Füllen wären alle älteren Zeiten falsch.
+   */
+  constructor(
+    cols: number,
+    rows: number,
+    readonly intervalMs = 0,
+  ) {
     this.cols = cols;
     this.rows = rows;
     this.data = new Float32Array(cols * rows);
@@ -72,6 +82,7 @@ export class HeatmapStore {
    */
   pushColumn(tsMs: number, synced: boolean, base: number, values: Float32Array): number {
     if (this.count > 0 && tsMs <= this.ts[this.latest]!) return -1;
+    if (this.intervalMs > 0 && this.count > 0) this.fillGap(tsMs);
     if (synced && values.length > 0) {
       if (!this.initialized) {
         this.origin = Math.round(base + values.length / 2 - this.rows / 2);
@@ -99,6 +110,40 @@ export class HeatmapStore {
     this.count = Math.min(this.count + 1, this.cols);
     this.dirty.add(idx);
     return idx;
+  }
+
+  private fillGap(tsMs: number): void {
+    const missing = Math.round((tsMs - this.ts[this.latest]!) / this.intervalMs) - 1;
+    if (missing <= 0) return;
+    const n = Math.min(missing, this.cols);
+    for (let i = n; i >= 1; i--) {
+      const idx = this.head;
+      const off = idx * this.rows;
+      this.data.fill(0, off, off + this.rows);
+      this.ts[idx] = tsMs - i * this.intervalMs;
+      this.synced[idx] = 2;
+      this.bestBid[idx] = NaN;
+      this.bestAsk[idx] = NaN;
+      this.trades[idx] = null;
+      this.liqs[idx] = null;
+      this.head = (this.head + 1) % this.cols;
+      this.count = Math.min(this.count + 1, this.cols);
+      this.dirty.add(idx);
+    }
+    // Viele Einzel-Uploads wären langsamer als ein kompletter
+    if (n > 64) {
+      this.fullDirty = true;
+      this.dirty.clear();
+    }
+  }
+
+  /** Zeitstempel der ältesten Spalte (null = leer). */
+  get oldestTs(): number | null {
+    return this.count ? this.ts[this.indexAgo(this.count - 1)]! : null;
+  }
+
+  get latestTs(): number | null {
+    return this.count ? this.ts[this.latest]! : null;
   }
 
   /** BBO/Trades gehören zur Spalte mit gleichem Zeitstempel (immer die neueste). */
@@ -155,9 +200,12 @@ export class HeatmapStore {
   }
 }
 
-/** Texturgröße: Zeilen = 4x Spaltenhöhe (Platz zum Wandern), Zweierpotenz. */
-export function rowsFor(halfRange: number, maxTex: number): number {
-  let r = 1024;
-  while (r < 4 * halfRange && r < maxTex) r *= 2;
-  return Math.min(r, maxTex);
+/**
+ * Texturgröße: Zeilen >= 2.5x halbe Spaltenhöhe (Spalte + Platz zum Wandern),
+ * Zweierpotenz, höchstens `cap` (Speicher: Spalten x Zeilen x 4 Byte).
+ */
+export function rowsFor(halfRange: number, maxTex: number, cap = 4096): number {
+  let r = 512;
+  while (r < 2.5 * halfRange && r < maxTex && r < cap) r *= 2;
+  return Math.min(r, maxTex, cap);
 }

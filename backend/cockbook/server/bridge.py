@@ -8,7 +8,10 @@ Kanäle
   alle Clients – die Seitenleiste zeigt alle Coins gleichzeitig. Pro (Symbol, Art) wird
   der letzte Wert gemerkt und neuen Clients sofort geschickt.
 
-Steuer-Nachrichten vom Frontend (JSON): ``{"type": "subscribe", "symbol": "ETHUSDT"}``.
+Steuer-Nachrichten vom Frontend (JSON):
+``{"type": "subscribe", "symbol": "ETHUSDT", "since": ms, "since_long": ms}``.
+``since``/``since_long`` (optional): Das Frontend hat die Spalten bis zu diesem Zeitpunkt
+noch im Speicher (Tab-Wechsel) – dann kommt nur der fehlende Rest der Historie.
 """
 
 from __future__ import annotations
@@ -37,10 +40,10 @@ class _Channel:
         self.status: str | None = None
         # Zustand, den jeder neue Abonnent einmal bekommt (z. B. 1m-Kerzen-Historie)
         self.static: dict[str, bytes] = {}
-        # eine Gruppe = alle Frames eines Intervalls
-        self.history: deque[list[bytes]] = deque(maxlen=max(history, 1))
+        # eine Gruppe = alle Frames eines Intervalls (mit Zeitstempel in ms)
+        self.history: deque[tuple[int, list[bytes]]] = deque(maxlen=max(history, 1))
         # Langzeit-Heatmap (grobe Spalten)
-        self.long_history: deque[bytes] = deque(maxlen=max(long_history, 1))
+        self.long_history: deque[tuple[int, bytes]] = deque(maxlen=max(long_history, 1))
 
 
 class _Client:
@@ -129,6 +132,8 @@ class Bridge:
         ch = self._channel(symbol)
         if hello != ch.hello:
             ch.history.clear()
+            if ch.hello is not None:
+                ch.long_history.clear()
             ch.hello = hello
             self._send_channel(symbol, hello)
 
@@ -137,16 +142,16 @@ class Bridge:
         ch.status = status
         self._send_channel(symbol, status)
 
-    def publish(self, symbol: str, frames: list[bytes]) -> None:
+    def publish(self, symbol: str, frames: list[bytes], ts_ms: int = 0) -> None:
         if self.cfg.history_columns:
-            self._channel(symbol).history.append(frames)
+            self._channel(symbol).history.append((ts_ms, frames))
         for f in frames:
             self._send_channel(symbol, f)
 
-    def publish_long(self, symbol: str, frame: bytes) -> None:
+    def publish_long(self, symbol: str, frame: bytes, ts_ms: int = 0) -> None:
         """Grobe Langzeit-Spalte: eigene, längere Historie."""
         if self.cfg.long_history_columns:
-            self._channel(symbol).long_history.append(frame)
+            self._channel(symbol).long_history.append((ts_ms, frame))
         self._send_channel(symbol, frame)
 
     def set_static(self, symbol: str, key: str, frame: bytes) -> None:
@@ -179,7 +184,13 @@ class Bridge:
         for frame in self._recent_liqs:
             client.put(frame)
 
-    def _subscribe(self, client: _Client, symbol: str) -> None:
+    def _subscribe(
+        self,
+        client: _Client,
+        symbol: str,
+        since: int | None = None,
+        since_long: int | None = None,
+    ) -> None:
         if self.on_subscribe is not None:
             self.on_subscribe(symbol)
         ch = self._channels.get(symbol)
@@ -194,11 +205,13 @@ class Bridge:
             client.put(ch.status)
         for frame in ch.static.values():
             client.put(frame)
-        for frame in ch.long_history:
-            client.put(frame)
-        for group in ch.history:
-            for f in group:
-                client.put(f)
+        for ts, frame in ch.long_history:
+            if since_long is None or ts > since_long:
+                client.put(frame)
+        for ts, group in ch.history:
+            if since is None or ts > since:
+                for f in group:
+                    client.put(f)
 
     # --- Server -------------------------------------------------------------------------
 
@@ -244,7 +257,14 @@ class Bridge:
             # Grunddaten mit verloren -> neu einreihen (Frontend dedupliziert).
             client.clear()
             self._send_base_state(client)
-            self._subscribe(client, msg["symbol"])
+            since = msg.get("since")
+            since_long = msg.get("since_long")
+            self._subscribe(
+                client,
+                msg["symbol"],
+                since if isinstance(since, int) else None,
+                since_long if isinstance(since_long, int) else None,
+            )
 
     async def start(self) -> None:
         app = web.Application()
