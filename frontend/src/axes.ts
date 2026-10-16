@@ -17,10 +17,10 @@ export interface Instrument {
 export const AXIS_W = 84;
 export const AXIS_H = 24;
 
-const BG = "#0f131a";
-const TEXT = "#9aa4b2";
-const BID = "#3ddc97";
-const ASK = "#ff5d73";
+const BG = "#2a2e35";
+const TEXT = "#aab2bd";
+const BID = "#55e5a8";
+const ASK = "#ff7385";
 
 export function formatPrice(ticks: number, inst: Instrument): string {
   return (ticks * inst.tickSize).toFixed(inst.tickDecimals);
@@ -93,7 +93,7 @@ export function drawPriceAxis(
     if (y < -8 || y > ph + 8) continue;
     ctx.fillStyle = color;
     ctx.fillRect(1, y - 8, AXIS_W - 2, 16);
-    ctx.fillStyle = "#0b0e13";
+    ctx.fillStyle = "#1d2026";
     ctx.fillText(formatPrice(price, inst), 6, y);
   }
 }

@@ -132,6 +132,10 @@ class EventBus:
         self._route_cache: dict[type[Event], tuple[Subscription, ...]] = {}
         self._closed = False
 
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
     def subscribe[E: Event](
         self,
         event_type: type[E],

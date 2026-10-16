@@ -1,12 +1,18 @@
+/* Helles, ruhiges Grau statt Fast-Schwarz; Heatmap-Hintergrund = --plot (siehe colorscale.ts) */
 :root {
   color-scheme: dark;
-  --bg: #0b0e13;
-  --panel: #0f131a;
-  --fg: #c9d1d9;
-  --muted: #8b95a3;
-  --ok: #3ddc97;
-  --bad: #ff5d73;
-  --accent: #b884ff;
+  --plot: #2e3239;
+  --bg: #33373f;
+  --panel: #2a2e35;
+  --panel-2: #30353d;
+  --line: #424852;
+  --fg: #dde2e8;
+  --muted: #9aa3ae;
+  --up: #55e5a8;
+  --down: #ff7385;
+  --accent: #b99cff;
+  --liq-long: #ffa833;
+  --liq-short: #5accff;
 }
 
 * {
@@ -34,7 +40,7 @@ body {
   gap: 14px;
   padding: 6px 12px;
   background: var(--panel);
-  border-bottom: 1px solid #1c2330;
+  border-bottom: 1px solid var(--line);
   flex-wrap: wrap;
 }
 
@@ -49,25 +55,25 @@ body {
   font-size: 11px;
   font-weight: bold;
   letter-spacing: 0.04em;
-  background: #1c2330;
+  background: var(--panel-2);
 }
 
 .badge.live {
-  background: var(--ok);
-  color: #06120c;
+  background: var(--up);
+  color: #08140f;
 }
 
 .badge.replay {
   background: var(--accent);
-  color: #120a1f;
+  color: #140c22;
 }
 
 .badge.ok {
-  color: var(--ok);
+  color: var(--up);
 }
 
 .badge.off {
-  color: var(--bad);
+  color: var(--down);
 }
 
 label {
@@ -83,9 +89,9 @@ input[type="range"] {
 }
 
 button {
-  background: #1c2330;
+  background: var(--panel-2);
   color: var(--fg);
-  border: 1px solid #2a3343;
+  border: 1px solid var(--line);
   border-radius: 4px;
   padding: 3px 10px;
   font: inherit;
@@ -101,27 +107,216 @@ button:hover {
   color: var(--muted);
 }
 
+#layout {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+/* --- Seitenleiste --------------------------------------------------------------------- */
+
+#sidebar {
+  width: 290px;
+  flex: none;
+  overflow-y: auto;
+  background: var(--panel);
+  border-right: 1px solid var(--line);
+  padding: 4px 10px 16px;
+  font-size: 12px;
+}
+
+#sidebar section {
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+#sidebar h3 {
+  margin: 4px 0 8px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+.coin {
+  display: grid;
+  grid-template-columns: 3.2em 1fr 4.8em 5.4em;
+  gap: 6px;
+  align-items: center;
+  width: 100%;
+  padding: 5px 6px;
+  margin: 0;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  text-align: right;
+}
+
+.coin .sym {
+  text-align: left;
+  font-weight: bold;
+}
+
+.coin:hover {
+  background: var(--panel-2);
+  border-color: var(--line);
+}
+
+.coin.active {
+  background: var(--panel-2);
+  border-color: var(--accent);
+}
+
+.coin-head {
+  color: var(--muted);
+  font-size: 10px;
+  cursor: default;
+}
+
+.coin-head:hover {
+  background: transparent;
+  border-color: transparent;
+}
+
+.coin-head span:first-child {
+  text-align: left;
+}
+
+.num {
+  font-variant-numeric: tabular-nums;
+}
+
+.up {
+  color: var(--up);
+}
+
+.down {
+  color: var(--down);
+}
+
+.toggle {
+  color: var(--fg);
+  padding: 3px 0;
+  cursor: pointer;
+}
+
+.toggle input {
+  accent-color: var(--accent);
+  margin: 0;
+}
+
+.feat {
+  padding: 2px 0 4px;
+}
+
+.feat-val {
+  margin: 2px 0 6px 22px;
+  color: var(--muted);
+}
+
+.kv {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 1px 0;
+}
+
+.kv .v {
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+}
+
+.kv .v.up {
+  color: var(--up);
+}
+
+.kv .v.down {
+  color: var(--down);
+}
+
+.kv .v.liq-long {
+  color: var(--liq-long);
+}
+
+.kv .v.liq-short {
+  color: var(--liq-short);
+}
+
+.bar {
+  display: flex;
+  height: 7px;
+  border-radius: 4px;
+  overflow: hidden;
+  margin: 3px 0 2px;
+  background: var(--panel-2);
+}
+
+.bar-l {
+  background: var(--up);
+  opacity: 0.8;
+}
+
+.bar-r {
+  background: var(--down);
+  opacity: 0.8;
+}
+
+.bar-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+}
+
+.liq-list {
+  margin-top: 4px;
+}
+
+.liq {
+  display: grid;
+  grid-template-columns: 5.2em 3.2em 3.4em 1fr;
+  gap: 4px;
+  padding: 1px 0;
+  font-size: 11px;
+}
+
+.liq .num {
+  text-align: right;
+}
+
+.liq.long span:nth-child(3) {
+  color: var(--liq-long);
+}
+
+.liq.short span:nth-child(3) {
+  color: var(--liq-short);
+}
+
+.planned-item {
+  padding: 4px 0;
+  color: var(--muted);
+}
+
+.hint {
+  font-size: 10.5px;
+  color: #7d8691;
+}
+
+/* --- Chart ---------------------------------------------------------------------------- */
+
 #chart {
   position: relative;
   flex: 1;
-  min-height: 0;
+  min-width: 0;
   overflow: hidden;
+  cursor: crosshair;
+  touch-action: none;
+  background: var(--plot);
 }
 
 #chart canvas {
   position: absolute;
   left: 0;
   top: 0;
-}
-
-#gl {
-  /* Bei Render-Skala < 1 Zellen pixelgenau hochskalieren statt weichzeichnen */
-  image-rendering: pixelated;
-}
-
-#chart {
-  cursor: crosshair;
-  touch-action: none;
 }
 
 /* Fadenkreuz und Tooltip als DOM: Mausbewegung verschiebt nur Elemente, ohne den
@@ -132,7 +327,7 @@ button:hover {
   top: 0;
   pointer-events: none;
   display: none;
-  border: 0 dashed rgba(220, 228, 240, 0.5);
+  border: 0 dashed rgba(235, 240, 246, 0.45);
   will-change: transform;
 }
 
@@ -153,9 +348,10 @@ button:hover {
   display: none;
   pointer-events: none;
   padding: 5px 8px;
-  background: rgba(15, 19, 26, 0.92);
-  border: 1px solid rgba(154, 164, 178, 0.4);
-  color: #e6edf3;
+  background: rgba(42, 46, 53, 0.94);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--fg);
   font-size: 12px;
   line-height: 16px;
   white-space: pre;
@@ -167,5 +363,5 @@ button:hover {
   color: var(--muted);
   font-size: 11px;
   background: var(--panel);
-  border-top: 1px solid #1c2330;
+  border-top: 1px solid var(--line);
 }

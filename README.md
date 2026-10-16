@@ -1,7 +1,7 @@
 # CockBook
 
-> **Status: Work in Progress** – Phase 2: Liquidity-Heatmap mit Trades (WebGL) für ein Symbol
-> (Binance USDⓈ-M). DOM, CVD, Alerts, Replay usw. folgen.
+> **Status: Work in Progress** – Liquidity-Heatmap mit Trades (WebGL) für BTC, ETH, SOL und XRP
+> (Binance USDⓈ-M), Seitenleiste mit Derivate-Kennzahlen. DOM, CVD, Alerts, Replay usw. folgen.
 
 Freies, lokal laufendes Orderflow- & Liquidity-Heatmap-Tool für Krypto-Märkte, inspiriert von Bookmap.
 Es nutzt ausschließlich öffentliche, kostenlose Börsen-Datenfeeds und läuft unter Ubuntu und Windows.
@@ -53,6 +53,15 @@ make dev       # Backend + Frontend-Dev-Server (http://127.0.0.1:5173)
 ```bash
 make dev       # Binance-Livedaten -> Backend (ws://127.0.0.1:8765) + Frontend http://127.0.0.1:5173
 ```
+
+Coins werden in `config.yaml` unter `symbols` eingetragen (Standard: BTCUSDT, ETHUSDT, SOLUSDT,
+XRPUSDT) und links in der Seitenleiste gewählt. Die Seitenleiste enthält außerdem alle Funktionen
+zum Ein-/Ausschalten (gelten für alle Coins):
+
+- **Chart:** Liquidity-Heatmap, Weich zeichnen, Trade-Bubbles, Best Bid/Ask, Liquidationen, Preisgitter
+- **Derivate:** Mark-/Indexpreis, Funding Rate (mit Countdown), Open Interest (Δ 5 min / 1 h),
+  Longs vs Shorts, Taker Buy/Sell, 24h-Statistik, Liquidationen aller Coins
+- **Geplant:** Liquidation Heatmap, Funding-Heatmap, RSI-Heatmap, Depth Delta, Multi-Börsen-Orderbuch …
 
 Bedienung: Mausrad = Preis-Zoom, Shift+Mausrad (oder Mausrad über der Zeitachse) = Zeit-Zoom,
 Ziehen = verschieben (auch zurück in der Zeit), Doppelklick oder `C` = zurück zu Live mit

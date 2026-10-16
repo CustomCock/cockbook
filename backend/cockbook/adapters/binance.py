@@ -43,6 +43,17 @@ ein aggTrade fasst Fills *eines Takers* zum selben Preis zusammen (alle Fills ei
 Market-Order auf einem Level). Genau diese Einheit wollen Trade-Bubbles zeigen.
 Aggressor: ``m == true`` (Käufer ist Maker) => Verkäufer war Taker => ``Side.ASK``.
 
+Marktkennzahlen (gelesen am 2026-10-16)
+---------------------------------------
+- ``<symbol>@markPrice@1s`` (/market): Mark-/Indexpreis, Funding-Rate ``r``, nächste
+  Funding-Zeit ``T``.
+- ``<symbol>@miniTicker`` (/market): rollierende 24h-Statistik (o/h/l/c, Volumen).
+- REST ``/fapi/v1/openInterest`` (Gewicht 1): aktuelles Open Interest in Kontrakten.
+- REST ``/futures/data/globalLongShortAccountRatio`` und ``/futures/data/takerlongshortRatio``
+  (Gewicht 0, Limit 1000 Requests/5 min): Werte pro Periode (5m … 1d), nur 30 Tage.
+- *Nicht* genutzt: ``topLongShortAccountRatio``/``topLongShortPositionRatio`` – laut
+  aktueller Doku nur noch mit API-Key (``X-MBX-APIKEY``); CockBook kommt ohne Account aus.
+
 Liquidationen: gedrosselt!
 --------------------------
 ``<symbol>@forceOrder`` liefert laut Doku pro Symbol nur die *letzte*
@@ -75,9 +86,14 @@ from cockbook.core.events import (
     Event,
     InstrumentInfo,
     Liquidation,
+    LongShortRatio,
+    MarkPrice,
+    OpenInterest,
     PriceLevel,
     RawMessage,
     Side,
+    TakerVolume,
+    Ticker24h,
     Trade,
 )
 from cockbook.core.instrument import Instrument
@@ -172,6 +188,84 @@ def parse_force_order(d: dict[str, Any], inst: Instrument, recv_ns: int) -> Liqu
         qty=filled if filled > 0 else Decimal(o["q"]),
         # Seite der Liquidations-Order: SELL = Long wird zwangsverkauft
         side=Side.ASK if o["S"] == "SELL" else Side.BID,
+    )
+
+
+def _ms(v: Any) -> int | None:
+    return int(v) * _MS if v else None
+
+
+def parse_mark_price(d: dict[str, Any], symbol: str, recv_ns: int) -> MarkPrice:
+    return MarkPrice(
+        exchange=EXCHANGE,
+        symbol=symbol,
+        ts_exchange_ns=_ms(d.get("E")),
+        ts_recv_ns=recv_ns,
+        mark_price=Decimal(d["p"]),
+        index_price=Decimal(d["i"]) if d.get("i") else None,
+        funding_rate=Decimal(d.get("r") or "0"),
+        next_funding_ns=_ms(d.get("T")),
+    )
+
+
+def parse_mini_ticker(d: dict[str, Any], symbol: str, recv_ns: int) -> Ticker24h:
+    return Ticker24h(
+        exchange=EXCHANGE,
+        symbol=symbol,
+        ts_exchange_ns=_ms(d.get("E")),
+        ts_recv_ns=recv_ns,
+        last=Decimal(d["c"]),
+        open=Decimal(d["o"]),
+        high=Decimal(d["h"]),
+        low=Decimal(d["l"]),
+        volume=Decimal(d["v"]),
+        quote_volume=Decimal(d["q"]),
+    )
+
+
+def parse_open_interest(d: dict[str, Any], recv_ns: int) -> OpenInterest:
+    return OpenInterest(
+        exchange=EXCHANGE,
+        symbol=d["symbol"],
+        ts_exchange_ns=_ms(d.get("time")),
+        ts_recv_ns=recv_ns,
+        open_interest=Decimal(d["openInterest"]),
+    )
+
+
+def parse_long_short(
+    rows: list[dict[str, Any]], symbol: str, period: str, recv_ns: int
+) -> LongShortRatio | None:
+    if not rows:
+        return None
+    d = rows[-1]  # aufsteigend sortiert -> letzter = aktuellster
+    return LongShortRatio(
+        exchange=EXCHANGE,
+        symbol=symbol,
+        ts_exchange_ns=_ms(d.get("timestamp")),
+        ts_recv_ns=recv_ns,
+        period=period,
+        long_share=Decimal(d["longAccount"]),
+        short_share=Decimal(d["shortAccount"]),
+        ratio=Decimal(d["longShortRatio"]),
+    )
+
+
+def parse_taker_volume(
+    rows: list[dict[str, Any]], symbol: str, period: str, recv_ns: int
+) -> TakerVolume | None:
+    if not rows:
+        return None
+    d = rows[-1]
+    return TakerVolume(
+        exchange=EXCHANGE,
+        symbol=symbol,
+        ts_exchange_ns=_ms(d.get("timestamp")),
+        ts_recv_ns=recv_ns,
+        period=period,
+        buy_volume=Decimal(d["buyVol"]),
+        sell_volume=Decimal(d["sellVol"]),
+        ratio=Decimal(d["buySellRatio"]),
     )
 
 
@@ -655,7 +749,8 @@ class BinanceUsdmAdapter:
                 tg.create_task(
                     run_ws(
                         session,
-                        f"{self.cfg.ws_market_url}/stream?streams={sym}@aggTrade/{sym}@forceOrder",
+                        f"{self.cfg.ws_market_url}/stream?streams="
+                        f"{sym}@aggTrade/{sym}@forceOrder/{sym}@markPrice@1s/{sym}@miniTicker",
                         name=f"{self.name}:market",
                         cfg=self.cfg.reconnect,
                         stop=self._stop,
@@ -669,6 +764,11 @@ class BinanceUsdmAdapter:
                     tg.create_task(
                         self._supervise("validation", lambda: self._validation_worker(session))
                     )
+                if self.cfg.metrics.enabled:
+                    tg.create_task(
+                        self._supervise("open_interest", lambda: self._oi_worker(session))
+                    )
+                    tg.create_task(self._supervise("ratios", lambda: self._ratios_worker(session)))
         log.info("adapter stopped", extra={"symbol": self.symbol})
 
     async def _supervise(self, name: str, worker: Callable[[], Coroutine[Any, Any, None]]) -> None:
@@ -687,6 +787,8 @@ class BinanceUsdmAdapter:
     # --- Public (Depth) -----------------------------------------------------------------
 
     async def _on_meta(self, event: str, conn: str, reason: str = "") -> None:
+        if self.bus.closed:  # Herunterfahren nach Fehler: Bus schon zu
+            return
         async with self._lock:
             await self.bus.publish(self._meta(event, time.time_ns(), conn=conn, reason=reason))
 
@@ -695,6 +797,8 @@ class BinanceUsdmAdapter:
 
     async def _on_public_close(self, reason: str) -> None:
         assert self.sync is not None
+        if self.bus.closed:  # Herunterfahren nach Fehler: Bus schon zu
+            return
         async with self._lock:
             now = time.time_ns()
             await self.bus.publish(self._meta("disconnect", now, conn="public", reason=reason))
@@ -795,8 +899,63 @@ class BinanceUsdmAdapter:
         elif etype == "forceOrder":
             ev = parse_force_order(data, self.inst, recv_ns)
             kind = "forceOrder"
+        elif etype == "markPriceUpdate":
+            ev = parse_mark_price(data, self.symbol, recv_ns)
+            kind = "markPrice"
+        elif etype == "24hrMiniTicker":
+            ev = parse_mini_ticker(data, self.symbol, recv_ns)
+            kind = "miniTicker"
         else:
             return
         async with self._lock:
             await self.bus.publish(self._raw(kind, text, recv_ns))
             await self.bus.publish(ev)
+
+    # --- Kennzahlen per REST ------------------------------------------------------------
+
+    async def _publish_rest(self, stream: str, text: str, ev: Event | None, recv_ns: int) -> None:
+        async with self._lock:
+            await self.bus.publish(self._raw(stream, text, recv_ns))
+            if ev is not None:
+                await self.bus.publish(ev)
+
+    async def _oi_worker(self, session: aiohttp.ClientSession) -> None:
+        url = f"{self.cfg.rest_url}/fapi/v1/openInterest"
+        while True:
+            try:
+                data, text = await get_json(session, url, {"symbol": self.symbol}, attempts=2)
+            except RestError as e:
+                log.warning("open interest failed", extra={"symbol": self.symbol, "error": str(e)})
+            else:
+                now = time.time_ns()
+                await self._publish_rest(
+                    "rest:openInterest", text, parse_open_interest(data, now), now
+                )
+            if await sleep_or_stop(self._stop, self.cfg.metrics.open_interest_interval_s):
+                return
+
+    async def _ratios_worker(self, session: aiohttp.ClientSession) -> None:
+        period = self.cfg.metrics.ratio_period
+        params: dict[str, str | int] = {"symbol": self.symbol, "period": period, "limit": 1}
+        endpoints = (
+            ("globalLongShortAccountRatio", parse_long_short),
+            ("takerlongshortRatio", parse_taker_volume),
+        )
+        while True:
+            for name, parser in endpoints:
+                try:
+                    data, text = await get_json(
+                        session, f"{self.cfg.rest_url}/futures/data/{name}", params, attempts=2
+                    )
+                except RestError as e:
+                    log.warning(
+                        "ratio request failed",
+                        extra={"symbol": self.symbol, "endpoint": name, "error": str(e)},
+                    )
+                    continue
+                now = time.time_ns()
+                await self._publish_rest(
+                    f"rest:{name}", text, parser(data, self.symbol, period, now), now
+                )
+            if await sleep_or_stop(self._stop, self.cfg.metrics.ratios_interval_s):
+                return

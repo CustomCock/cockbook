@@ -9,8 +9,12 @@ logging:
 exchanges:
   - name: binance_usdm
     enabled: true
-    symbols:
+    symbols:                      # Reihenfolge = Reihenfolge in der Seitenleiste
       - symbol: BTCUSDT
+      - symbol: ETHUSDT
+      - symbol: SOLUSDT
+      - symbol: XRPUSDT
+      # optional fest statt automatisch:  - {symbol: BTCUSDT, bucket_ticks: 5}
     # Simulator statt Binance
     rest_url: http://127.0.0.1:9876
     ws_public_url: ws://127.0.0.1:9876/public
@@ -25,6 +29,11 @@ exchanges:
       snapshot_limit: 1000
       history_updates: 600        # ~60 s bei 100 ms
       resync_on_mismatch: true
+    metrics:                      # Derivate-Kennzahlen per REST (ohne API-Key)
+      enabled: true
+      open_interest_interval_s: 15
+      ratios_interval_s: 300      # Long/Short + Taker Buy/Sell (Binance liefert 5-min-Perioden)
+      ratio_period: 5m
     reconnect:
       initial_backoff_s: 1
       max_backoff_s: 60
@@ -33,8 +42,9 @@ exchanges:
 
 aggregation:
   interval_ms: 100        # Breite einer Heatmap-Spalte
-  bucket_ticks: 5         # Preis-Bucket als Vielfaches der Tick-Größe (BTCUSDT: 5 x 0.10 = 0.50)
-  half_range_buckets: 400 # Buckets je Seite um den Mid (5 x 0.10 x 400 = +-200 USDT)
+  bucket_bps: 0.06        # Preis-Bucket ~ 0.06 Basispunkte des Preises, je Symbol automatisch
+                          # auf runde Tick-Vielfache gerundet (BTC ~80k -> 0.50 USDT)
+  half_range_buckets: 400 # Buckets je Seite um den Mid (BTC: 400 x 0.50 = +-200 USDT)
 
 server:
   host: 127.0.0.1         # nur Loopback erlaubt
@@ -44,7 +54,8 @@ server:
 
 ui:
   recenter_margin: 0.15   # Auto-Recentering, wenn der Mid in die äußeren 15 % läuft
-  bubble_px_per_unit: 6   # Bubble-Radius: sqrt(Volumen) * Faktor
+  bubble_px_per_sqrt_kusd: 1.2  # Bubble-Radius = sqrt(Gegenwert/1000 USDT) * Faktor
+                                # (100k USDT -> 12 px, 1 Mio. -> 38 px)
   bubble_max_px: 40
 
 recorder:

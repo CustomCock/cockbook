@@ -155,3 +155,50 @@ class RawMessage(Event):
 
     stream: str
     payload: str
+
+
+# --- Marktkennzahlen (Derivate) ------------------------------------------------------
+# Börsenunabhängig normalisiert; jede Futures-Börse kann sie liefern (Phase 5).
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class MarkPrice(Event):
+    mark_price: Decimal
+    index_price: Decimal | None
+    funding_rate: Decimal  # pro Funding-Intervall, z. B. 0.0001 = 0.01 %
+    next_funding_ns: int | None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Ticker24h(Event):
+    last: Decimal
+    open: Decimal
+    high: Decimal
+    low: Decimal
+    volume: Decimal  # Basis-Währung
+    quote_volume: Decimal  # Quote-Währung (USDT)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class OpenInterest(Event):
+    open_interest: Decimal  # offene Kontrakte in Basis-Währung
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class LongShortRatio(Event):
+    """Anteil Accounts mit Netto-Long vs. Netto-Short (alle Nutzer der Börse)."""
+
+    period: str
+    long_share: Decimal  # 0..1
+    short_share: Decimal
+    ratio: Decimal
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class TakerVolume(Event):
+    """Aggressives Kauf- vs. Verkaufsvolumen über eine Periode."""
+
+    period: str
+    buy_volume: Decimal
+    sell_volume: Decimal
+    ratio: Decimal

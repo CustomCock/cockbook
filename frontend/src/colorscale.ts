@@ -17,19 +17,23 @@
  * die hellste Farbe), "Schwelle" ist das Perzentil, unter dem nichts gezeichnet wird.
  */
 
-/** Eigene Palette (dunkel -> Indigo -> Violett -> Magenta -> Orange -> Bernstein -> Hell). */
-const STOPS: [number, [number, number, number]][] = [
-  [0.0, [14, 16, 30]],
-  [0.15, [34, 26, 82]],
-  [0.32, [72, 44, 140]],
-  [0.5, [134, 52, 150]],
-  [0.66, [200, 70, 112]],
-  [0.8, [242, 124, 74]],
-  [0.92, [255, 200, 98]],
-  [1.0, [255, 248, 222]],
-];
+/**
+ * Eigene Palette auf grauem Grund: beginnt exakt bei der Hintergrundfarbe, damit
+ * wenig Liquidität weich in den Hintergrund ausläuft statt hart abzusetzen
+ * (Grau -> Stahlblau -> Violett -> Magenta -> Orange -> Bernstein -> Hell).
+ */
+export const BACKGROUND: [number, number, number] = [46, 50, 57];
 
-export const BACKGROUND: [number, number, number] = [11, 14, 19];
+const STOPS: [number, [number, number, number]][] = [
+  [0.0, BACKGROUND],
+  [0.12, [50, 62, 108]],
+  [0.3, [80, 64, 152]],
+  [0.48, [140, 66, 160]],
+  [0.64, [206, 82, 124]],
+  [0.78, [242, 130, 84]],
+  [0.9, [255, 198, 106]],
+  [1.0, [255, 247, 224]],
+];
 
 export function buildLut(size = 256): Uint8Array {
   const lut = new Uint8Array(size * 4);

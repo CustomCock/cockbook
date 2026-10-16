@@ -34,20 +34,21 @@ def column(ts_ms: int) -> HeatmapColumn:
 
 
 def test_column_frames_roundtrip() -> None:
-    frames = encode_column(column(1_791_000_000_123))
+    frames = encode_column("BTCUSDT", column(1_791_000_000_123))
     col, bbo, tr = (msgpack.unpackb(f) for f in frames)
     assert col["t"] == "col"
+    assert col["sym"] == "BTCUSDT"
     assert col["ts"] == 1_791_000_000_123
     assert col["b"] == 1000
     assert struct.unpack("<3f", col["q"]) == (0.0, 1.5, 2.25)  # little-endian float32
-    assert bbo == {"t": "bbo", "ts": 1_791_000_000_123, "bb": 5001, "ba": 5002}
+    assert bbo == {"t": "bbo", "sym": "BTCUSDT", "ts": 1_791_000_000_123, "bb": 5001, "ba": 5002}
     assert tr["x"] == [[-1, 5001.0, 2.0, 3]]
 
 
 def test_no_trade_frame_without_trades() -> None:
     c = column(1)
     c.trades = []
-    assert len(encode_column(c)) == 2
+    assert len(encode_column("BTCUSDT", c)) == 2
 
 
 async def test_bridge_sends_hello_status_history_then_live() -> None:
@@ -55,32 +56,34 @@ async def test_bridge_sends_hello_status_history_then_live() -> None:
     bridge = Bridge(ServerConfig(port=port, history_columns=2))
     await bridge.start()
     try:
-        bridge.set_hello(encode_control("hello", symbol="BTCUSDT"))
-        bridge.set_status(encode_control("status", synced=True))
+        bridge.register_symbol("BTCUSDT")
+        bridge.set_hello("BTCUSDT", encode_control("hello", symbol="BTCUSDT"))
+        bridge.set_status("BTCUSDT", encode_control("status", synced=True))
         for i in range(3):  # Historie fasst 2 Intervalle
-            bridge.publish(encode_column(column(i)))
+            bridge.publish("BTCUSDT", encode_column("BTCUSDT", column(i)))
         async with aiohttp.ClientSession() as s, s.ws_connect(f"http://127.0.0.1:{port}/ws") as ws:
             got: list[Any] = []
             async with asyncio.timeout(5):
-                while len(got) < 2 + 2 * 3 + 3:
-                    if len(got) == 2 + 2 * 3:
-                        bridge.publish(encode_column(column(99)))
+                while len(got) < 3 + 2 * 3 + 3:
+                    if len(got) == 3 + 2 * 3:
+                        bridge.publish("BTCUSDT", encode_column("BTCUSDT", column(99)))
                     msg = await ws.receive()
                     got.append(
                         json.loads(msg.data)
                         if msg.type is aiohttp.WSMsgType.TEXT
                         else msgpack.unpackb(msg.data)
                     )
-        assert got[0]["type"] == "hello"
-        assert got[1]["type"] == "status"
-        assert [g["ts"] for g in got[2:] if g.get("t") == "col"] == [1, 2, 99]
+        assert got[0]["type"] == "symbols"
+        assert got[1]["type"] == "hello"
+        assert got[2]["type"] == "status"
+        assert [g["ts"] for g in got[3:] if g.get("t") == "col"] == [1, 2, 99]
     finally:
         await bridge.stop()
 
 
 async def test_new_hello_clears_history() -> None:
     bridge = Bridge(ServerConfig(history_columns=10))
-    bridge.set_hello("a")
-    bridge.publish(encode_column(column(1)))
-    bridge.set_hello("b")
-    assert len(bridge._history) == 0
+    bridge.set_hello("BTCUSDT", "a")
+    bridge.publish("BTCUSDT", encode_column("BTCUSDT", column(1)))
+    bridge.set_hello("BTCUSDT", "b")
+    assert len(bridge._channels["BTCUSDT"].history) == 0

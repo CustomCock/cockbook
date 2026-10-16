@@ -32,12 +32,26 @@ from aiohttp import web
 
 log = logging.getLogger("cockbook.sim")
 
-TICK = Decimal("0.10")
-SYMBOL = "BTCUSDT"
+# Symbol -> (Tick-Größe, Start-Mid in Ticks, typische Trade-Größe)
+SYMBOLS: dict[str, tuple[Decimal, int, float]] = {
+    "BTCUSDT": (Decimal("0.10"), 650_000, 0.3),
+    "ETHUSDT": (Decimal("0.01"), 300_000, 3.0),
+    "SOLUSDT": (Decimal("0.01"), 15_000, 40.0),
+    "XRPUSDT": (Decimal("0.0001"), 25_000, 3000.0),
+}
 
 
 class SimBook:
-    def __init__(self, mid: int = 650_000, depth: int = 1500, seed: int | None = None) -> None:
+    def __init__(
+        self,
+        symbol: str = "BTCUSDT",
+        tick: Decimal = Decimal("0.10"),
+        mid: int = 650_000,
+        depth: int = 1500,
+        seed: int | None = None,
+    ) -> None:
+        self.symbol = symbol
+        self.tick = tick
         self.rng = random.Random(seed)
         self.mid = mid  # Asks ab mid, Bids bis mid-1
         self.depth = depth
@@ -110,12 +124,12 @@ class SimBook:
             "e": "depthUpdate",
             "E": now,
             "T": now,
-            "s": SYMBOL,
+            "s": self.symbol,
             "U": self._first_pending,
             "u": self.update_id,
             "pu": self.last_emitted,
-            "b": [[str(p * TICK), q] for p, q in self._pending["b"].items()],
-            "a": [[str(p * TICK), q] for p, q in self._pending["a"].items()],
+            "b": [[str(p * self.tick), q] for p, q in self._pending["b"].items()],
+            "a": [[str(p * self.tick), q] for p, q in self._pending["a"].items()],
         }
         self.last_emitted = self.update_id
         self._pending = {"b": {}, "a": {}}
@@ -130,88 +144,206 @@ class SimBook:
             "lastUpdateId": self.update_id,
             "E": now,
             "T": now,
-            "bids": [[str(p * TICK), q] for p, q in bids],
-            "asks": [[str(p * TICK), q] for p, q in asks],
+            "bids": [[str(p * self.tick), q] for p, q in bids],
+            "asks": [[str(p * self.tick), q] for p, q in asks],
         }
 
 
 class Simulator:
     def __init__(self, interval_ms: int = 100, changes_per_event: int = 20) -> None:
-        self.book = SimBook()
+        self.books = {
+            sym: SimBook(sym, tick, mid, seed=n)
+            for n, (sym, (tick, mid, _)) in enumerate(SYMBOLS.items())
+        }
+        self.rng = random.Random(42)
         self.interval = interval_ms / 1000
         self.changes = changes_per_event
-        self.public: set[web.WebSocketResponse] = set()
-        self.market: set[web.WebSocketResponse] = set()
+        # Verbindung -> abonnierte Symbole (aus ?streams=…)
+        self.public: dict[web.WebSocketResponse, set[str]] = {}
+        self.market: dict[web.WebSocketResponse, set[str]] = {}
         self.trade_id = 1
+        self.oi = {
+            sym: 50_000.0 / (mid * float(tick)) * 1000 for sym, (tick, mid, _) in SYMBOLS.items()
+        }
+
+    async def _send(
+        self, pool: dict[web.WebSocketResponse, set[str]], sym: str, stream: str, data: Any
+    ) -> None:
+        msg = json.dumps({"stream": stream, "data": data})
+        for ws, syms in list(pool.items()):
+            if sym in syms:
+                await ws.send_str(msg)
 
     async def tick_loop(self) -> None:
+        last_stats = 0.0
         while True:
-            n = self.book.rng.randint(1, self.changes * 2)
+            n = self.rng.randint(1, self.changes * 2)
             # Änderungen über das Intervall verteilt, damit REST-Snapshots mitten
             # in ein Event fallen können.
             for _ in range(n):
-                self.book.step()
+                for book in self.books.values():
+                    book.step()
                 await asyncio.sleep(self.interval / n)
-            ev = self.book.take_event()
-            if ev:
-                msg = json.dumps({"stream": "btcusdt@depth@100ms", "data": ev})
-                for ws in list(self.public):
-                    await ws.send_str(msg)
-            if self.book.rng.random() < 0.5:
-                await self._trade()
+            for sym, book in self.books.items():
+                ev = book.take_event()
+                if ev:
+                    await self._send(self.public, sym, f"{sym.lower()}@depth@100ms", ev)
+                if self.rng.random() < 0.5:
+                    await self._trade(sym, book)
+                if self.rng.random() < 0.01:
+                    await self._liquidation(sym, book)
+            if time.monotonic() - last_stats >= 1.0:
+                last_stats = time.monotonic()
+                for sym, book in self.books.items():
+                    await self._stats(sym, book)
 
-    async def _trade(self) -> None:
-        buy = self.book.rng.random() < 0.5
-        price = self.book.mid if buy else self.book.mid - 1
+    async def _trade(self, sym: str, book: SimBook) -> None:
+        buy = self.rng.random() < 0.5
+        price = book.mid if buy else book.mid - 1
         now = int(time.time() * 1000)
         data = {
             "e": "aggTrade",
             "E": now,
             "a": self.trade_id,
-            "s": SYMBOL,
-            "p": str(price * TICK),
-            "q": f"{self.book.rng.expovariate(1 / 0.3):.3f}",
+            "s": sym,
+            "p": str(price * book.tick),
+            "q": f"{self.rng.expovariate(1 / SYMBOLS[sym][2]):.3f}",
             "f": self.trade_id,
             "l": self.trade_id,
             "T": now,
             "m": not buy,
         }
         self.trade_id += 1
-        msg = json.dumps({"stream": "btcusdt@aggTrade", "data": data})
-        for ws in list(self.market):
-            await ws.send_str(msg)
+        await self._send(self.market, sym, f"{sym.lower()}@aggTrade", data)
+
+    async def _liquidation(self, sym: str, book: SimBook) -> None:
+        long_liq = self.rng.random() < 0.5
+        price = str((book.mid - 3 if long_liq else book.mid + 3) * book.tick)
+        qty = f"{self.rng.expovariate(1 / (SYMBOLS[sym][2] * 5)):.3f}"
+        now = int(time.time() * 1000)
+        data = {
+            "e": "forceOrder",
+            "E": now,
+            "o": {
+                "s": sym,
+                "S": "SELL" if long_liq else "BUY",
+                "o": "LIMIT",
+                "f": "IOC",
+                "q": qty,
+                "p": price,
+                "ap": price,
+                "X": "FILLED",
+                "l": qty,
+                "z": qty,
+                "T": now,
+            },
+        }
+        await self._send(self.market, sym, f"{sym.lower()}@forceOrder", data)
+
+    async def _stats(self, sym: str, book: SimBook) -> None:
+        now = int(time.time() * 1000)
+        mid = book.mid * book.tick
+        await self._send(
+            self.market,
+            sym,
+            f"{sym.lower()}@markPrice@1s",
+            {
+                "e": "markPriceUpdate",
+                "E": now,
+                "s": sym,
+                "p": str(mid),
+                "i": str(mid),
+                "P": str(mid),
+                "r": f"{self.rng.uniform(-0.0002, 0.0003):.8f}",
+                "T": (now // 28_800_000 + 1) * 28_800_000,
+            },
+        )
+        o = mid * Decimal("0.98")
+        await self._send(
+            self.market,
+            sym,
+            f"{sym.lower()}@miniTicker",
+            {
+                "e": "24hrMiniTicker",
+                "E": now,
+                "s": sym,
+                "c": str(mid),
+                "o": str(o),
+                "h": str(mid * Decimal("1.01")),
+                "l": str(o * Decimal("0.99")),
+                "v": "123456.7",
+                "q": "987654321.0",
+            },
+        )
 
     async def exchange_info(self, _: web.Request) -> web.Response:
         return web.json_response(
             {
                 "symbols": [
                     {
-                        "symbol": SYMBOL,
+                        "symbol": sym,
                         "status": "TRADING",
                         "filters": [
-                            {"filterType": "PRICE_FILTER", "tickSize": str(TICK)},
+                            {"filterType": "PRICE_FILTER", "tickSize": str(tick)},
                             {"filterType": "LOT_SIZE", "stepSize": "0.001"},
                         ],
                     }
+                    for sym, (tick, _, _) in SYMBOLS.items()
                 ]
             }
         )
 
     async def depth(self, request: web.Request) -> web.Response:
-        await asyncio.sleep(self.book.rng.uniform(0.05, 0.4))  # Netzwerk-Latenz
-        snap = self.book.snapshot(int(request.query.get("limit", "500")))
-        await asyncio.sleep(self.book.rng.uniform(0.05, 0.4))
+        book = self.books[request.query["symbol"]]
+        await asyncio.sleep(self.rng.uniform(0.05, 0.4))  # Netzwerk-Latenz
+        snap = book.snapshot(int(request.query.get("limit", "500")))
+        await asyncio.sleep(self.rng.uniform(0.05, 0.4))
         return web.json_response(snap)
 
-    async def _ws(self, request: web.Request, pool: set[web.WebSocketResponse]) -> Any:
+    async def open_interest(self, request: web.Request) -> web.Response:
+        sym = request.query["symbol"]
+        self.oi[sym] *= self.rng.uniform(0.998, 1.002)
+        return web.json_response(
+            {"openInterest": f"{self.oi[sym]:.3f}", "symbol": sym, "time": int(time.time() * 1000)}
+        )
+
+    async def long_short(self, request: web.Request) -> web.Response:
+        lo = self.rng.uniform(0.4, 0.7)
+        return web.json_response(
+            [
+                {
+                    "symbol": request.query["symbol"],
+                    "longShortRatio": f"{lo / (1 - lo):.4f}",
+                    "longAccount": f"{lo:.4f}",
+                    "shortAccount": f"{1 - lo:.4f}",
+                    "timestamp": int(time.time() * 1000),
+                }
+            ]
+        )
+
+    async def taker(self, request: web.Request) -> web.Response:
+        b, s = self.rng.uniform(100, 500), self.rng.uniform(100, 500)
+        return web.json_response(
+            [
+                {
+                    "buySellRatio": f"{b / s:.4f}",
+                    "buyVol": f"{b:.4f}",
+                    "sellVol": f"{s:.4f}",
+                    "timestamp": int(time.time() * 1000),
+                }
+            ]
+        )
+
+    async def _ws(self, request: web.Request, pool: dict[web.WebSocketResponse, set[str]]) -> Any:
         ws = web.WebSocketResponse()
         await ws.prepare(request)
-        pool.add(ws)
+        syms = {st.split("@")[0].upper() for st in request.query.get("streams", "").split("/")}
+        pool[ws] = syms
         try:
             async for _ in ws:
                 pass
         finally:
-            pool.discard(ws)
+            pool.pop(ws, None)
         return ws
 
     async def ws_public(self, request: web.Request) -> Any:
@@ -226,6 +358,9 @@ async def serve(port: int) -> None:
     app = web.Application()
     app.router.add_get("/fapi/v1/exchangeInfo", sim.exchange_info)
     app.router.add_get("/fapi/v1/depth", sim.depth)
+    app.router.add_get("/fapi/v1/openInterest", sim.open_interest)
+    app.router.add_get("/futures/data/globalLongShortAccountRatio", sim.long_short)
+    app.router.add_get("/futures/data/takerlongshortRatio", sim.taker)
     app.router.add_get("/public/stream", sim.ws_public)
     app.router.add_get("/market/stream", sim.ws_market)
     runner = web.AppRunner(app)

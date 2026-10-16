@@ -6,7 +6,12 @@ from collections.abc import Callable
 from pathlib import Path
 
 from cockbook.adapters.binance import BinanceUsdmAdapter
-from cockbook.config import BinanceUsdmConfig, BookValidationConfig, ReconnectConfig
+from cockbook.config import (
+    BinanceUsdmConfig,
+    BookValidationConfig,
+    MetricsConfig,
+    ReconnectConfig,
+)
 from cockbook.core.eventbus import EventBus
 from cockbook.core.events import (
     BookDelta,
@@ -34,6 +39,7 @@ def cfg_for(fake: FakeBinance) -> BinanceUsdmConfig:
         ws_public_url=f"ws://{fake.base}/public",
         ws_market_url=f"ws://{fake.base}/market",
         validation=BookValidationConfig(enabled=False),
+        metrics=MetricsConfig(enabled=False),
         reconnect=ReconnectConfig(initial_backoff_s=0.05, max_backoff_s=0.1, stale_timeout_s=5),
     )
 

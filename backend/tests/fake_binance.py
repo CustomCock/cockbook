@@ -117,7 +117,9 @@ class FakeBinance:
         return await self._run_script(request, script)
 
     async def _market(self, request: web.Request) -> web.WebSocketResponse:
-        assert request.query["streams"] == "btcusdt@aggTrade/btcusdt@forceOrder"
+        streams = request.query["streams"].split("/")
+        assert "btcusdt@aggTrade" in streams
+        assert "btcusdt@forceOrder" in streams
         i = self.market_connections
         self.market_connections += 1
         script = self.market_scripts[i] if i < len(self.market_scripts) else []

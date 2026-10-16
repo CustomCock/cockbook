@@ -18,6 +18,13 @@ export interface TradeBin {
   count: number;
 }
 
+/** Liquidation: side +1 = Short liquidiert (Zwangskauf), -1 = Long liquidiert. */
+export interface LiqMark {
+  side: 1 | -1;
+  priceTicks: number;
+  qty: number;
+}
+
 export class HeatmapStore {
   readonly cols: number;
   readonly rows: number;
@@ -27,6 +34,7 @@ export class HeatmapStore {
   readonly bestAsk: Float64Array;
   readonly synced: Uint8Array;
   readonly trades: (TradeBin[] | null)[];
+  readonly liqs: (LiqMark[] | null)[];
   origin = 0;
   head = 0; // nächster Schreibindex
   count = 0;
@@ -45,6 +53,7 @@ export class HeatmapStore {
     this.bestAsk = new Float64Array(cols).fill(NaN);
     this.synced = new Uint8Array(cols);
     this.trades = new Array<TradeBin[] | null>(cols).fill(null);
+    this.liqs = new Array<LiqMark[] | null>(cols).fill(null);
   }
 
   /** Ringindex der Spalte, die `k` Spalten vor der neuesten liegt (k = 0: neueste). */
@@ -85,6 +94,7 @@ export class HeatmapStore {
     this.bestBid[idx] = NaN;
     this.bestAsk[idx] = NaN;
     this.trades[idx] = null;
+    this.liqs[idx] = null;
     this.head = (this.head + 1) % this.cols;
     this.count = Math.min(this.count + 1, this.cols);
     this.dirty.add(idx);
@@ -108,6 +118,11 @@ export class HeatmapStore {
   setTrades(tsMs: number, trades: TradeBin[]): void {
     const i = this.columnFor(tsMs);
     if (i !== null) this.trades[i] = trades;
+  }
+
+  setLiquidations(tsMs: number, liqs: LiqMark[]): void {
+    const i = this.columnFor(tsMs);
+    if (i !== null) this.liqs[i] = liqs;
   }
 
   /** Liquidität in Bucket `bucket` der Spalte `k` Spalten vor der neuesten. */

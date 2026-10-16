@@ -43,20 +43,24 @@ uniform float uThreshold;
 uniform float uLogLo;
 uniform float uLogHi;
 uniform vec3 uBg;
+uniform bool uSmooth;      // weich interpolieren statt harter Zellen
+uniform int uTaps;         // vertikale Glättung: 1 = nur bilinear, 3 = zusätzlich ±2 px
 out vec4 outColor;
+
+float fetch(int k, int r) {
+  if (k < 0 || k >= uCount || r < 0 || r >= uRows) return 0.0;
+  int col = uHead - k;
+  if (col < 0) col += uCols;
+  return texelFetch(uData, ivec2(r, col), 0).r;
+}
 
 float sampleMax(int k0, int nk, int r0, int nr) {
   float m = 0.0;
   for (int i = 0; i < 4; i++) {
     if (i >= nk) break;
-    int k = k0 + i;
-    if (k < 0 || k >= uCount) continue;
-    int col = ((uHead - k) % uCols + uCols) % uCols;
     for (int j = 0; j < 4; j++) {
       if (j >= nr) break;
-      int r = r0 + j;
-      if (r < 0 || r >= uRows) continue;
-      m = max(m, texelFetch(uData, ivec2(r, col), 0).r);
+      m = max(m, fetch(k0 + i, r0 + j));
     }
   }
   return m;
@@ -64,28 +68,46 @@ float sampleMax(int k0, int nk, int r0, int nr) {
 
 void main() {
   vec2 frag = gl_FragCoord.xy;               // Ursprung unten links
-  float fromRight = uSize.x - frag.x;
-  int k0 = int(floor(fromRight / uColW + uOffset));
+  float cf = (uSize.x - frag.x) / uColW + uOffset;   // Spalten ab der neuesten
   float unitsPerPx = (uYHi - uYLo) / uSize.y;
-  float u = uYLo + frag.y * unitsPerPx;
-  int r0 = int(floor(u));
+  float u = uYLo + frag.y * unitsPerPx;               // Preis-Zeile (kontinuierlich)
   // Herausgezoomt: mehrere Spalten/Zeilen pro Pixel -> Maximum nehmen, damit
   // einzelne Walls nicht durch Aliasing verschwinden (auf 4x4 begrenzt).
   int nk = clamp(int(ceil(1.0 / uColW)), 1, 4);
   int nr = clamp(int(ceil(unitsPerPx)), 1, 4);
   float v;
-  if (nk == 1 && nr == 1) {
-    if (k0 < 0 || k0 >= uCount || r0 < 0 || r0 >= uRows) { v = 0.0; }
-    else { int col = uHead - k0; if (col < 0) col += uCols; v = texelFetch(uData, ivec2(r0, col), 0).r; }
+  if (nk > 1 || nr > 1) {
+    v = sampleMax(int(floor(cf)), nk, int(floor(u)), nr);
+  } else if (uSmooth) {
+    // Weich: bilinear zwischen Zellmitten (wirkt, wenn Zeilen groß sind) plus leichte
+    // vertikale Glättung über ~±2 Bildschirm-Pixel (wirkt, wenn Zeilen klein sind).
+    float kc = cf - 0.5;
+    int k0 = int(floor(kc));
+    float fk = smoothstep(0.0, 1.0, fract(kc));
+    float spread = 1.8 * unitsPerPx;
+    v = 0.0;
+    int h = uTaps / 2;
+    for (int i = -1; i <= 1; i++) {
+      if (i < -h || i > h) continue;
+      float rc = u + float(i) * spread - 0.5;
+      int r0 = int(floor(rc));
+      float fr = smoothstep(0.0, 1.0, fract(rc));
+      float a = mix(fetch(k0, r0), fetch(k0, r0 + 1), fr);
+      float b = mix(fetch(k0 + 1, r0), fetch(k0 + 1, r0 + 1), fr);
+      v += mix(a, b, fk) * (h == 0 ? 1.0 : (i == 0 ? 0.5 : 0.25));
+    }
   } else {
-    v = sampleMax(k0, nk, r0, nr);
+    v = fetch(int(floor(cf)), int(floor(u)));
   }
-  if (v <= uThreshold || v <= 0.0) {
+  if (v <= 0.0) {
     outColor = vec4(uBg, 1.0);
     return;
   }
   float t = clamp((log(v) - uLogLo) / (uLogHi - uLogLo), 0.0, 1.0);
-  outColor = texture(uLut, vec2(t * (255.0 / 256.0) + 0.5 / 256.0, 0.5));
+  vec3 c = texture(uLut, vec2(t * (255.0 / 256.0) + 0.5 / 256.0, 0.5)).rgb;
+  // Schwelle weich ausblenden statt hart abschneiden
+  float alpha = uThreshold > 0.0 ? smoothstep(uThreshold * 0.6, uThreshold, v) : 1.0;
+  outColor = vec4(mix(uBg, c, alpha), 1.0);
 }`;
 
 function compile(gl: WebGL2RenderingContext, type: number, src: string): WebGLShader {
@@ -131,7 +153,7 @@ export class HeatmapRenderer {
     this.prog = prog;
     for (const name of [
       "uData", "uLut", "uSize", "uColW", "uOffset", "uHead", "uCount", "uCols", "uRows",
-      "uYLo", "uYHi", "uThreshold", "uLogLo", "uLogHi", "uBg",
+      "uYLo", "uYHi", "uThreshold", "uLogLo", "uLogHi", "uBg", "uSmooth", "uTaps",
     ]) {
       this.u[name] = gl.getUniformLocation(prog, name);
     }
@@ -180,7 +202,7 @@ export class HeatmapRenderer {
   }
 
   /** `pxScale` = Device-Pixel pro CSS-Pixel *dieses* Canvas (dpr x Render-Skala). */
-  draw(view: View, range: ScaleRange | null, pxScale: number): void {
+  draw(view: View, range: ScaleRange | null, pxScale: number, smooth = true): void {
     const gl = this.gl;
     const s = this.store;
     const w = this.canvas.width;
@@ -214,6 +236,10 @@ export class HeatmapRenderer {
     gl.uniform1f(u.uLogLo!, range.logLo);
     gl.uniform1f(u.uLogHi!, range.logHi);
     gl.uniform3f(u.uBg!, bg[0], bg[1], bg[2]);
+    gl.uniform1i(u.uSmooth!, smooth ? 1 : 0);
+    // Software-Renderer: jeder Texturzugriff kostet CPU -> nur bilinear; das
+    // Hochskalieren der halben Auflösung durch den Browser glättet zusätzlich.
+    gl.uniform1i(u.uTaps!, this.isSoftware ? 1 : 3);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
 }
@@ -224,45 +250,57 @@ export class HeatmapRenderer {
 
 const PRIM_VS = `#version 300 es
 layout(location = 0) in vec2 aPos;     // CSS-px, Ursprung oben links
-layout(location = 1) in float aRadius; // CSS-px (nur Punkte)
+layout(location = 1) in float aAux;    // Punkte: Radius (CSS-px); weiche Linien: Abstand zur Mitte
 layout(location = 2) in vec4 aColor;
 uniform vec2 uRes;                     // Plotgröße in CSS-px
 uniform float uPx;                     // Device-px pro CSS-px
 uniform float uMaxPoint;
 out vec4 vColor;
 out float vSize;
+out float vAux;
 void main() {
   vec2 clip = vec2(aPos.x / uRes.x * 2.0 - 1.0, 1.0 - aPos.y / uRes.y * 2.0);
   gl_Position = vec4(clip, 0.0, 1.0);
-  vSize = min(aRadius * 2.0 * uPx + 2.0, uMaxPoint);
+  vSize = min(aAux * 2.0 * uPx + 2.0, uMaxPoint);
   gl_PointSize = vSize;
+  vAux = aAux;
   vColor = aColor;
 }`;
 
 const PRIM_FS = `#version 300 es
 precision mediump float;
-uniform bool uPoints;
+uniform int uMode;      // 0 = Flächen, 1 = Kreis, 2 = Raute, 3 = weiche Linie
+uniform float uHalf;    // weiche Linie: halbe Kernbreite (CSS-px)
+uniform float uFeather; // weiche Linie: Auslaufbreite (CSS-px)
 in vec4 vColor;
 in float vSize;
+in float vAux;
 out vec4 outColor;
 void main() {
-  if (!uPoints) { outColor = vColor; return; }
-  // Kreis mit kräftigerem Rand
-  float d = length(gl_PointCoord * 2.0 - 1.0);
-  if (d > 1.0) discard;
-  float ring = 1.0 - 3.0 / vSize;
-  float a = d > ring ? min(1.0, vColor.a + 0.4) : vColor.a;
+  if (uMode == 0) { outColor = vColor; return; }
+  if (uMode == 3) {
+    float a = 1.0 - smoothstep(uHalf, uHalf + uFeather, abs(vAux));
+    outColor = vec4(vColor.rgb, vColor.a * a);
+    return;
+  }
+  vec2 p = gl_PointCoord * 2.0 - 1.0;
+  // Kreis bzw. Raute (L1-Norm); Rand weich über ~1,5 px
+  float d = uMode == 2 ? abs(p.x) + abs(p.y) : length(p);
+  float px = 3.0 / vSize;
+  float edge = 1.0 - smoothstep(1.0 - px, 1.0, d);
+  if (edge <= 0.0) discard;
+  float ring = smoothstep(1.0 - 3.0 * px, 1.0 - px, d);
+  float a = mix(vColor.a, min(1.0, vColor.a + 0.35), ring) * edge;
   outColor = vec4(vColor.rgb, a);
 }`;
+
+export const PRIM = { FLAT: 0, CIRCLE: 1, DIAMOND: 2, SOFT_LINE: 3 } as const;
 
 export class PrimRenderer {
   private prog: WebGLProgram;
   private vao: WebGLVertexArrayObject;
   private buf: WebGLBuffer;
-  private uRes: WebGLUniformLocation | null;
-  private uPx: WebGLUniformLocation | null;
-  private uPoints: WebGLUniformLocation | null;
-  private uMaxPoint: WebGLUniformLocation | null;
+  private u: Record<string, WebGLUniformLocation | null> = {};
   private maxPoint: number;
 
   constructor(private gl: WebGL2RenderingContext) {
@@ -274,10 +312,9 @@ export class PrimRenderer {
       throw new Error(`Link-Fehler: ${gl.getProgramInfoLog(prog)}`);
     }
     this.prog = prog;
-    this.uRes = gl.getUniformLocation(prog, "uRes");
-    this.uPx = gl.getUniformLocation(prog, "uPx");
-    this.uPoints = gl.getUniformLocation(prog, "uPoints");
-    this.uMaxPoint = gl.getUniformLocation(prog, "uMaxPoint");
+    for (const n of ["uRes", "uPx", "uMaxPoint", "uMode", "uHalf", "uFeather"]) {
+      this.u[n] = gl.getUniformLocation(prog, n);
+    }
     const range = gl.getParameter(gl.ALIASED_POINT_SIZE_RANGE) as Float32Array;
     this.maxPoint = range[1] ?? 64;
     this.vao = gl.createVertexArray()!;
@@ -294,21 +331,37 @@ export class PrimRenderer {
     gl.bindVertexArray(null);
   }
 
-  /** mode: gl.LINES | gl.TRIANGLES | gl.POINTS */
-  draw(mode: number, data: Float32Array, vertices: number, cssW: number, cssH: number, px: number): void {
+  /**
+   * mode: PRIM.FLAT/SOFT_LINE -> Dreiecke, PRIM.CIRCLE/DIAMOND -> Punkte.
+   * Weiche Linien: `half`/`feather` bestimmen Kern- und Auslaufbreite.
+   */
+  draw(
+    mode: number,
+    data: Float32Array,
+    vertices: number,
+    cssW: number,
+    cssH: number,
+    px: number,
+    half = 0.5,
+    feather = 1,
+  ): void {
     if (vertices === 0) return;
     const gl = this.gl;
+    const u = this.u;
     gl.useProgram(this.prog);
     gl.bindVertexArray(this.vao);
     gl.bindBuffer(gl.ARRAY_BUFFER, this.buf);
     gl.bufferData(gl.ARRAY_BUFFER, data.subarray(0, vertices * 7), gl.STREAM_DRAW);
-    gl.uniform2f(this.uRes, cssW, cssH);
-    gl.uniform1f(this.uPx, px);
-    gl.uniform1i(this.uPoints, mode === gl.POINTS ? 1 : 0);
-    gl.uniform1f(this.uMaxPoint, this.maxPoint);
+    gl.uniform2f(u.uRes!, cssW, cssH);
+    gl.uniform1f(u.uPx!, px);
+    gl.uniform1i(u.uMode!, mode);
+    gl.uniform1f(u.uHalf!, half);
+    gl.uniform1f(u.uFeather!, feather);
+    gl.uniform1f(u.uMaxPoint!, this.maxPoint);
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-    gl.drawArrays(mode, 0, vertices);
+    const isPoint = mode === PRIM.CIRCLE || mode === PRIM.DIAMOND;
+    gl.drawArrays(isPoint ? gl.POINTS : gl.TRIANGLES, 0, vertices);
     gl.disable(gl.BLEND);
     gl.bindVertexArray(null);
   }

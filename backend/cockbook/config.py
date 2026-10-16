@@ -26,6 +26,18 @@ class LoggingConfig(_Model):
 
 class SymbolConfig(_Model):
     symbol: Annotated[str, Field(min_length=1)]
+    # Optional fest: Preis-Bucket in Ticks. Sonst automatisch aus aggregation.bucket_bps.
+    bucket_ticks: Annotated[int, Field(gt=0)] | None = None
+
+
+class MetricsConfig(_Model):
+    """Derivate-Kennzahlen per REST (Open Interest, Long/Short, Taker-Volumen)."""
+
+    enabled: bool = True
+    open_interest_interval_s: Annotated[float, Field(ge=5)] = 15.0
+    # Ratios werden von Binance in Perioden geliefert; öfter abfragen bringt nichts.
+    ratios_interval_s: Annotated[float, Field(ge=60)] = 300.0
+    ratio_period: Literal["5m", "15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d"] = "5m"
 
 
 class ReconnectConfig(_Model):
@@ -67,6 +79,7 @@ class BinanceUsdmConfig(_Model):
     # (außerhalb kennt das lokale Buch unveränderte Level nicht).
     coverage_refresh_fraction: Annotated[float, Field(gt=0, le=1)] = 0.5
     validation: BookValidationConfig = Field(default_factory=BookValidationConfig)
+    metrics: MetricsConfig = Field(default_factory=MetricsConfig)
     reconnect: ReconnectConfig = Field(default_factory=ReconnectConfig)
 
 
@@ -75,7 +88,10 @@ type ExchangeConfig = BinanceUsdmConfig
 
 class AggregationConfig(_Model):
     interval_ms: Annotated[int, Field(ge=10)] = 100  # eine Heatmap-Spalte
-    bucket_ticks: Annotated[int, Field(gt=0)] = 1  # Preis-Bucket = n Ticks
+    # Preis-Bucket automatisch je Symbol: Bucket ~ Mid * bucket_bps / 10000, auf ein
+    # "rundes" Vielfaches der Tick-Größe gerundet (1, 2, 5, 10, 20, …), mindestens 1 Tick.
+    # Damit sehen BTC (Tick 0.10) und XRP (Tick 0.0001) gleich "dicht" aus.
+    bucket_bps: Annotated[float, Field(gt=0)] = 0.06
     # Buckets je Seite um den Mid, die pro Spalte gesendet werden
     half_range_buckets: Annotated[int, Field(gt=0, le=1000)] = 400
 
@@ -102,8 +118,9 @@ class UiConfig(_Model):
 
     # Auto-Recentering, sobald der Mid näher als dieser Anteil der Höhe am Rand ist
     recenter_margin: Annotated[float, Field(ge=0, lt=0.5)] = 0.15
-    # Bubble-Radius in px für 1 Einheit Basis-Währung (Fläche ~ Volumen)
-    bubble_px_per_unit: Annotated[float, Field(gt=0)] = 6.0
+    # Bubble-Radius in px = Wurzel(Gegenwert in 1000 USDT) x Faktor (Fläche ~ Gegenwert).
+    # In USDT statt Basis-Menge, damit Bubbles über alle Coins vergleichbar sind.
+    bubble_px_per_sqrt_kusd: Annotated[float, Field(gt=0)] = 1.2
     bubble_max_px: Annotated[float, Field(gt=0)] = 40.0
 
 

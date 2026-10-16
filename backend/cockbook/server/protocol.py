@@ -1,19 +1,30 @@
 """Nachrichtenformat Backend -> Frontend.
 
-Binär (MessagePack) für alles Hochfrequente, JSON nur für Steuer-Nachrichten.
+Binär (MessagePack) für alle Daten, JSON nur für Steuer-Nachrichten.
 Zeitstempel in Millisekunden (int): ns passen nicht verlustfrei in eine JS-Number.
+Jeder Daten-Frame trägt ``sym``, damit das Frontend nach einem Symbolwechsel
+verspätete Frames des alten Symbols sicher verwerfen kann.
 
-Binär-Frames (Feld ``t`` = Typ):
+Chart-Frames (nur an Clients, die das Symbol abonniert haben, mit Historie):
 
-``col``  Heatmap-Spalte   {t, ts, s: synced, b: base_bucket, q: float32-LE-Bytes}
-``bbo``  Best Bid/Ask     {t, ts, bb: ticks|None, ba: ticks|None}
-``tr``   Trades der Spalte {t, ts, x: [[side(+1 Kauf/-1 Verkauf), vwap_ticks, qty, count], …]}
+``col``  Heatmap-Spalte    {t, sym, ts, s: synced, b: base_bucket, q: float32-LE-Bytes}
+``bbo``  Best Bid/Ask      {t, sym, ts, bb: ticks|None, ba: ticks|None}
+``tr``   Trades            {t, sym, ts, x: [[side, vwap_ticks, qty, n], …]} (+1 Kauf, -1 Verk.)
+``lq``   Liquidationen     {t, sym, ts, x: [[side, price_ticks, qty], …]} (+1 Short, -1 Long)
 
-Spalte, BBO und Trades desselben Intervalls haben denselben ``ts`` und kommen in
-dieser Reihenfolge.
+Kennzahl-Frames (an alle Clients, Seitenleiste zeigt alle Coins):
+
+``mark`` {sym, ts, mp, ip, fr, nft}   Mark-/Indexpreis, Funding-Rate, nächstes Funding (ms)
+``tick`` {sym, ts, last, open, high, low, vol, qvol}   24h rollierend
+``oi``   {sym, ts, oi}                Open Interest (Basis-Währung)
+``ls``   {sym, ts, p, long, short, ratio}   Long/Short-Ratio (Accounts) je Periode p
+``tv``   {sym, ts, p, buy, sell, ratio}     Taker Buy/Sell-Volumen je Periode p
+``liq``  {sym, ts, side, price, qty}  einzelne Liquidation (für die Liste aller Coins)
+
+Kennzahlen als float: reine Anzeige, keine Orderbuch-Keys.
 
 ``q`` als rohe float32-Bytes statt Liste: 4 Byte/Bucket statt ~5–9 Byte msgpack-float,
-und das Frontend kann sie direkt als ``Float32Array`` in die GPU-Textur laden.
+und das Frontend lädt sie direkt als ``Float32Array`` in die GPU-Textur.
 """
 
 from __future__ import annotations
@@ -26,9 +37,22 @@ from typing import Any
 import msgpack
 
 from cockbook.core.aggregation import HeatmapColumn
-from cockbook.core.events import Side
+from cockbook.core.events import (
+    Event,
+    Liquidation,
+    LongShortRatio,
+    MarkPrice,
+    OpenInterest,
+    Side,
+    TakerVolume,
+    Ticker24h,
+)
 
 _NS_PER_MS = 1_000_000
+
+
+def _ms(ns: int | None) -> int | None:
+    return ns // _NS_PER_MS if ns is not None else None
 
 
 def _f32_le(values: array[float]) -> bytes:
@@ -38,19 +62,32 @@ def _f32_le(values: array[float]) -> bytes:
     return values.tobytes()
 
 
-def encode_column(col: HeatmapColumn) -> list[bytes]:
+def _pack(obj: dict[str, Any]) -> bytes:
+    out: bytes = msgpack.packb(obj)
+    return out
+
+
+def encode_column(symbol: str, col: HeatmapColumn) -> list[bytes]:
     ts = col.ts_ns // _NS_PER_MS
     frames = [
-        msgpack.packb(
-            {"t": "col", "ts": ts, "s": col.synced, "b": col.base_bucket, "q": _f32_le(col.values)}
+        _pack(
+            {
+                "t": "col",
+                "sym": symbol,
+                "ts": ts,
+                "s": col.synced,
+                "b": col.base_bucket,
+                "q": _f32_le(col.values),
+            }
         ),
-        msgpack.packb({"t": "bbo", "ts": ts, "bb": col.best_bid, "ba": col.best_ask}),
+        _pack({"t": "bbo", "sym": symbol, "ts": ts, "bb": col.best_bid, "ba": col.best_ask}),
     ]
     if col.trades:
         frames.append(
-            msgpack.packb(
+            _pack(
                 {
                     "t": "tr",
+                    "sym": symbol,
                     "ts": ts,
                     "x": [
                         [1 if b.side is Side.BID else -1, b.vwap_ticks, b.qty, b.count]
@@ -59,7 +96,79 @@ def encode_column(col: HeatmapColumn) -> list[bytes]:
                 }
             )
         )
+    if col.liquidations:
+        frames.append(
+            _pack(
+                {
+                    "t": "lq",
+                    "sym": symbol,
+                    "ts": ts,
+                    "x": [
+                        [1 if side is Side.BID else -1, price, qty]
+                        for side, price, qty in col.liquidations
+                    ],
+                }
+            )
+        )
     return frames
+
+
+def encode_stat(e: Event) -> tuple[str, bytes] | None:
+    """Kennzahl-Event -> (Art, Frame). None, wenn das Event keine Kennzahl ist."""
+    base: dict[str, Any] = {"sym": e.symbol, "ts": _ms(e.ts_ns)}
+    if isinstance(e, MarkPrice):
+        kind = "mark"
+        base |= {
+            "mp": float(e.mark_price),
+            "ip": float(e.index_price) if e.index_price is not None else None,
+            "fr": float(e.funding_rate),
+            "nft": _ms(e.next_funding_ns),
+        }
+    elif isinstance(e, Ticker24h):
+        kind = "tick"
+        base |= {
+            "last": float(e.last),
+            "open": float(e.open),
+            "high": float(e.high),
+            "low": float(e.low),
+            "vol": float(e.volume),
+            "qvol": float(e.quote_volume),
+        }
+    elif isinstance(e, OpenInterest):
+        kind = "oi"
+        base["oi"] = float(e.open_interest)
+    elif isinstance(e, LongShortRatio):
+        kind = "ls"
+        base |= {
+            "p": e.period,
+            "long": float(e.long_share),
+            "short": float(e.short_share),
+            "ratio": float(e.ratio),
+        }
+    elif isinstance(e, TakerVolume):
+        kind = "tv"
+        base |= {
+            "p": e.period,
+            "buy": float(e.buy_volume),
+            "sell": float(e.sell_volume),
+            "ratio": float(e.ratio),
+        }
+    else:
+        return None
+    return kind, _pack({"t": kind, **base})
+
+
+def encode_liquidation(e: Liquidation, price: float) -> bytes:
+    return _pack(
+        {
+            "t": "liq",
+            "sym": e.symbol,
+            "ts": _ms(e.ts_ns),
+            "side": 1 if e.side is Side.BID else -1,
+            "price": price,
+            "qty": float(e.qty),
+        }
+    )
 
 
 def encode_control(msg_type: str, **fields: Any) -> str:

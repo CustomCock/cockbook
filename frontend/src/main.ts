@@ -1,14 +1,27 @@
 import "./style.css";
 import { AXIS_H, AXIS_W, drawPriceAxis, drawTimeAxis, formatPrice, gridStepTicks, timeLabel, type Instrument } from "./axes";
 import { computeRange, type ScaleRange, type ScaleSettings } from "./colorscale";
-import { HeatmapRenderer, PrimRenderer } from "./gl";
+import { loadFeatures, saveFeatures } from "./features";
+import { HeatmapRenderer, PRIM, PrimRenderer } from "./gl";
+import { Markets, decimalsOf } from "./markets";
 import { connect, toFloat32, type Hello } from "./net";
-import { buildBubbles, buildLines, buildTriangles, VertexBuilder, type SceneParams } from "./scene";
+import {
+  buildBbo,
+  buildBubbles,
+  buildGrid,
+  buildLiquidations,
+  buildUnsynced,
+  LINE,
+  VertexBuilder,
+  type SceneParams,
+} from "./scene";
+import { Sidebar } from "./sidebar";
 import { HeatmapStore, rowsFor, type TradeBin } from "./store";
 import { panY, priceUnit, recenter, visibleCols, xToCol, yToUnit, zoomX, zoomY, type View } from "./viewport";
 
 const WS_URL = (import.meta.env.VITE_COCKBOOK_WS as string | undefined) ?? "ws://127.0.0.1:8765/ws";
 const SETTINGS_KEY = "cockbook.settings.v1";
+const SYMBOL_KEY = "cockbook.symbol.v1";
 const MAX_HISTORY_COLS = 4096;
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -30,7 +43,7 @@ const params = new URLSearchParams(location.search);
 /**
  * Render-Skala der WebGL-Fläche (interne Auflösung relativ zur Anzeige). Mit GPU 1.0;
  * auf Software-Renderern (z. B. VM ohne GPU-Durchreichung) 0.5 – dort kostet jedes
- * Pixel CPU-Zeit. Hochskaliert wird pixelgenau per CSS. Override: ?scale=0.75
+ * Pixel CPU-Zeit. Override: ?scale=0.75
  */
 const renderScale = Number(params.get("scale")) || (heatmap.isSoftware ? 0.5 : 1);
 /** Jeden Frame zeichnen statt nur bei Änderungen (für Messungen): ?continuous / ?bench */
@@ -38,6 +51,12 @@ const continuous = params.has("continuous") || params.has("bench");
 
 // --- Zustand -----------------------------------------------------------------------------
 
+let currentSymbol: string | null = null;
+try {
+  currentSymbol = localStorage.getItem(SYMBOL_KEY);
+} catch {
+  /* egal */
+}
 let hello: Hello | null = null;
 let inst: Instrument | null = null;
 let store: HeatmapStore | null = null;
@@ -49,6 +68,10 @@ let mouse: { x: number; y: number } | null = null;
 let columnsReceived = 0;
 let dataVersion = 0;
 let sizeVersion = 0;
+let featureVersion = 0;
+
+const markets = new Markets();
+const features = loadFeatures();
 
 interface Saved {
   contrastLog: number;
@@ -115,7 +138,16 @@ function resize(): void {
 new ResizeObserver(resize).observe(chartEl);
 resize();
 
-// --- Daten -------------------------------------------------------------------------------
+// --- Seitenleiste ----------------------------------------------------------------------------
+
+const sidebar = new Sidebar($<HTMLElement>("sidebar"), markets, features, {
+  onSelect: (sym) => selectSymbol(sym),
+  onToggle: () => {
+    saveFeatures(features);
+    featureVersion++;
+  },
+});
+setInterval(() => sidebar.update(Date.now()), 500);
 
 function setBadge(id: string, text: string, cls: string): void {
   const el = $<HTMLElement>(id);
@@ -123,62 +155,113 @@ function setBadge(id: string, text: string, cls: string): void {
   el.className = `badge ${cls}`;
 }
 
-connect(WS_URL, {
-  onConnection(ok) {
-    if (!ok) setBadge("sync", "keine Verbindung", "off");
-  },
-  onHello(h) {
-    const key = (x: Hello | null) =>
-      x && [x.exchange, x.symbol, x.tick_size, x.bucket_ticks, x.interval_ms, x.half_range_buckets].join("|");
-    const changed = key(h) !== key(hello);
-    hello = h;
-    inst = {
-      symbol: h.symbol,
-      tickSize: Number(h.tick_size),
-      tickDecimals: (h.tick_size.split(".")[1] ?? "").replace(/0+$/, "").length,
-      bucketTicks: h.bucket_ticks,
-    };
-    $<HTMLElement>("symbol").textContent = `${h.exchange} · ${h.symbol}`;
-    setBadge("mode", h.mode.toUpperCase(), h.mode);
-    if (changed || !store) {
-      const maxTex = heatmap.maxTextureSize;
-      store = new HeatmapStore(Math.min(MAX_HISTORY_COLS, maxTex), rowsFor(h.half_range_buckets, maxTex));
-      heatmap.attach(store);
-      viewInitialized = false;
-      range = null;
-    }
-  },
-  onStatus(s) {
-    setBadge("sync", s.synced ? "SYNC" : `NICHT SYNCHRON (${s.reason})`, s.synced ? "ok" : "off");
-  },
-  onFrame(f) {
-    if (!store || !hello) return;
-    dataVersion++;
-    if (f.t === "col") {
-      const values = toFloat32(f.q);
-      if (store.pushColumn(f.ts, f.s, f.b, values) < 0) return; // schon vorhanden
-      columnsReceived++;
-      if (!viewInitialized && f.s && values.length) {
-        const center = f.b + values.length / 2;
-        const half = hello.half_range_buckets * 0.6;
-        view = { ...view, yLo: center - half, yHi: center + half };
-        viewInitialized = true;
+function selectSymbol(sym: string): void {
+  if (sym === currentSymbol && store) return;
+  currentSymbol = sym;
+  try {
+    localStorage.setItem(SYMBOL_KEY, sym);
+  } catch {
+    /* egal */
+  }
+  // Chart leeren, bis hello + Historie des neuen Symbols da sind
+  hello = null;
+  inst = null;
+  store = null;
+  range = null;
+  viewInitialized = false;
+  view = { ...view, offset: 0, autoCenter: true };
+  dataVersion++;
+  sidebar.setActive(sym);
+  $<HTMLElement>("symbol").textContent = sym;
+  setBadge("sync", "lade …", "");
+  conn.subscribe(sym);
+}
+
+// --- Daten -------------------------------------------------------------------------------
+
+const conn = connect(
+  WS_URL,
+  {
+    onConnection(ok) {
+      if (!ok) setBadge("sync", "keine Verbindung", "off");
+    },
+    onSymbols(s) {
+      for (const info of s.symbols) markets.ensure(info.symbol, info.tick_size);
+      const list = s.symbols.map((x) => x.symbol);
+      sidebar.setSymbols(list);
+      if (!currentSymbol || !list.includes(currentSymbol)) {
+        if (list[0]) selectSymbol(list[0]);
+      } else {
+        sidebar.setActive(currentSymbol);
       }
-      // Beim Zurückscrollen bleibt der betrachtete Zeitpunkt stehen
-      if (view.offset > 0) view = { ...view, offset: Math.min(view.offset + 1, store.count - 1) };
-    } else if (f.t === "bbo") {
-      store.setBbo(f.ts, f.bb, f.ba);
-      if (view.autoCenter && view.offset === 0 && f.bb !== null && f.ba !== null) {
-        view = recenter(view, priceUnit((f.bb + f.ba) / 2, hello.bucket_ticks), hello.ui.recenter_margin);
+    },
+    onHello(h) {
+      if (currentSymbol && h.symbol !== currentSymbol) return; // verspätet, altes Symbol
+      currentSymbol = h.symbol;
+      const key = (x: Hello | null) =>
+        x && [x.exchange, x.symbol, x.tick_size, x.bucket_ticks, x.interval_ms, x.half_range_buckets].join("|");
+      const changed = key(h) !== key(hello);
+      hello = h;
+      inst = {
+        symbol: h.symbol,
+        tickSize: Number(h.tick_size),
+        tickDecimals: decimalsOf(h.tick_size),
+        bucketTicks: h.bucket_ticks,
+      };
+      markets.ensure(h.symbol, h.tick_size);
+      $<HTMLElement>("symbol").textContent = `${h.exchange} · ${h.symbol}`;
+      setBadge("mode", h.mode.toUpperCase(), h.mode);
+      sidebar.setActive(h.symbol);
+      if (changed || !store) {
+        const maxTex = heatmap.maxTextureSize;
+        store = new HeatmapStore(Math.min(MAX_HISTORY_COLS, maxTex), rowsFor(h.half_range_buckets, maxTex));
+        heatmap.attach(store);
+        viewInitialized = false;
+        range = null;
       }
-    } else if (f.t === "tr") {
-      store.setTrades(
-        f.ts,
-        f.x.map(([side, vwapTicks, qty, count]): TradeBin => ({ side: side > 0 ? 1 : -1, vwapTicks, qty, count })),
-      );
-    }
+    },
+    onStatus(s) {
+      if (s.symbol !== currentSymbol) return;
+      setBadge("sync", s.synced ? "SYNC" : `NICHT SYNCHRON (${s.reason})`, s.synced ? "ok" : "off");
+    },
+    onStat(f) {
+      markets.apply(f);
+    },
+    onChart(f) {
+      if (!store || !hello || f.sym !== currentSymbol) return;
+      dataVersion++;
+      if (f.t === "col") {
+        const values = toFloat32(f.q);
+        if (store.pushColumn(f.ts, f.s, f.b, values) < 0) return; // schon vorhanden
+        columnsReceived++;
+        if (!viewInitialized && f.s && values.length) {
+          const center = f.b + values.length / 2;
+          const half = hello.half_range_buckets * 0.6;
+          view = { ...view, yLo: center - half, yHi: center + half };
+          viewInitialized = true;
+        }
+        // Beim Zurückscrollen bleibt der betrachtete Zeitpunkt stehen
+        if (view.offset > 0) view = { ...view, offset: Math.min(view.offset + 1, store.count - 1) };
+      } else if (f.t === "bbo") {
+        store.setBbo(f.ts, f.bb, f.ba);
+        if (view.autoCenter && view.offset === 0 && f.bb !== null && f.ba !== null) {
+          view = recenter(view, priceUnit((f.bb + f.ba) / 2, hello.bucket_ticks), hello.ui.recenter_margin);
+        }
+      } else if (f.t === "tr") {
+        store.setTrades(
+          f.ts,
+          f.x.map(([side, vwapTicks, qty, count]): TradeBin => ({ side: side > 0 ? 1 : -1, vwapTicks, qty, count })),
+        );
+      } else if (f.t === "lq") {
+        store.setLiquidations(
+          f.ts,
+          f.x.map(([side, priceTicks, qty]) => ({ side: side > 0 ? 1 : -1, priceTicks, qty })),
+        );
+      }
+    },
   },
-});
+  () => currentSymbol,
+);
 
 // --- Farbskala (alle 500 ms aus dem sichtbaren Bereich) -----------------------------------
 
@@ -312,15 +395,17 @@ function updateHover(): void {
 
 // --- Render-Loop ---------------------------------------------------------------------------
 
-const tris = new VertexBuilder(1024);
-const lines = new VertexBuilder(8192);
-const points = new VertexBuilder(4096);
+const vUnsynced = new VertexBuilder(1024);
+const vGrid = new VertexBuilder(1024);
+const vBbo = new VertexBuilder(16384);
+const vBubbles = new VertexBuilder(4096);
+const vLiqs = new VertexBuilder(256);
 
 function render(): void {
   const { pw, ph } = plotSize();
   const px = dpr * renderScale;
   heatmap.upload();
-  heatmap.draw(view, range, px);
+  heatmap.draw(view, features.heatmap ? range : null, px, features.smooth);
   if (store && inst && store.count > 0) {
     const p: SceneParams = {
       store,
@@ -328,26 +413,38 @@ function render(): void {
       pw,
       ph,
       bucketTicks: inst.bucketTicks,
+      tickSize: inst.tickSize,
       gridStepTicks: gridStepTicks(view, ph, inst),
-      bubblePxPerUnit: hello?.ui.bubble_px_per_unit ?? 6,
+      bubblePxPerSqrtKusd: hello?.ui.bubble_px_per_sqrt_kusd ?? 1.2,
       bubbleMaxPx: hello?.ui.bubble_max_px ?? 40,
     };
-    const gl = heatmap.gl;
-    buildTriangles(p, tris);
-    prims.draw(gl.TRIANGLES, tris.data, tris.n, pw, ph, px);
-    buildLines(p, lines);
-    prims.draw(gl.LINES, lines.data, lines.n, pw, ph, px);
-    buildBubbles(p, points);
-    prims.draw(gl.POINTS, points.data, points.n, pw, ph, px);
+    buildUnsynced(p, vUnsynced);
+    prims.draw(PRIM.FLAT, vUnsynced.data, vUnsynced.n, pw, ph, px);
+    if (features.grid) {
+      buildGrid(p, vGrid);
+      prims.draw(PRIM.SOFT_LINE, vGrid.data, vGrid.n, pw, ph, px, LINE.grid.half, LINE.grid.feather);
+    }
+    if (features.bbo) {
+      buildBbo(p, vBbo);
+      prims.draw(PRIM.SOFT_LINE, vBbo.data, vBbo.n, pw, ph, px, LINE.bbo.half, LINE.bbo.feather);
+    }
+    if (features.bubbles) {
+      buildBubbles(p, vBubbles);
+      prims.draw(PRIM.CIRCLE, vBubbles.data, vBubbles.n, pw, ph, px);
+    }
+    if (features.liqMarkers) {
+      buildLiquidations(p, vLiqs);
+      prims.draw(PRIM.DIAMOND, vLiqs.data, vLiqs.n, pw, ph, px);
+    }
   }
   drawPriceAxis(yAxisCanvas, dpr, store, view, inst, ph);
   drawTimeAxis(xAxisCanvas, dpr, store, view, hello?.interval_ms ?? 100, pw);
 }
 
 let lastSig: unknown[] = [];
-/** Neu zeichnen nur, wenn sich etwas geändert hat (Daten, Sicht, Skala, Größe). */
+/** Neu zeichnen nur, wenn sich etwas geändert hat (Daten, Sicht, Skala, Größe, Schalter). */
 function changed(): boolean {
-  const sig = [dataVersion, view, range, sizeVersion, hello];
+  const sig = [dataVersion, view, range, sizeVersion, hello, featureVersion];
   const diff = sig.some((v, i) => v !== lastSig[i]);
   lastSig = sig;
   return diff;
@@ -385,6 +482,7 @@ declare global {
       frames: number;
       renderScale: number;
       renderer: string;
+      symbol: string | null;
     };
     __cockbookBench?: (n: number) => { renderMs: number; pixels: number };
   }
@@ -408,6 +506,7 @@ setInterval(() => {
     frames,
     renderScale,
     renderer: heatmap.rendererName,
+    symbol: currentSymbol,
   };
   const mode = continuous ? "" : " (bei Änderung)";
   const sw = heatmap.isSoftware ? " · Software-GL" : "";
