@@ -106,25 +106,50 @@ class BinanceUsdmConfig(_Model):
 type ExchangeConfig = BinanceUsdmConfig
 
 
+class LongTierConfig(_Model):
+    """Eine Stufe der Langzeit-Heatmap (eigener Tab, Umschalter 12h/1D/1W/1M).
+
+    Jede Stufe hat ihre eigene Auflösung, damit ein Zeitraum immer ~1000–1500 Spalten hat:
+    1M in 5-s-Spalten wären 535 000 Spalten, in 30-min-Spalten 1488.
+    """
+
+    name: Annotated[str, Field(min_length=1, max_length=8)]
+    span_h: Annotated[float, Field(gt=0)]  # angezeigter Zeitraum
+    interval_s: Annotated[int, Field(ge=5)]  # eine Spalte
+    sample_s: Annotated[int, Field(ge=1)]  # Abtastung des Buchs innerhalb der Spalte
+    factor: Annotated[int, Field(ge=1, le=1000)]  # grober Bucket = n feine Buckets
+    candle_interval: str  # Binance-Kline-Intervall für die Kerzen dieser Stufe
+
+
+def _default_tiers() -> list[LongTierConfig]:
+    return [
+        LongTierConfig(name="12h", span_h=12, interval_s=30, sample_s=2, factor=8,
+                       candle_interval="5m"),
+        LongTierConfig(name="1D", span_h=24, interval_s=60, sample_s=3, factor=16,
+                       candle_interval="15m"),
+        LongTierConfig(name="1W", span_h=168, interval_s=600, sample_s=10, factor=40,
+                       candle_interval="1h"),
+        LongTierConfig(name="1M", span_h=744, interval_s=1800, sample_s=30, factor=100,
+                       candle_interval="4h"),
+    ]  # fmt: skip
+
+
 class AggregationConfig(_Model):
     interval_ms: Annotated[int, Field(ge=10)] = 100  # eine Heatmap-Spalte
-    # Langzeit-Heatmap: gröbere Spalten (Mittelwert über die Zeit) für weites Herauszoomen
-    long_interval_ms: Annotated[int, Field(ge=200)] = 5000
-    # Langzeit: ein Bucket = n feine Buckets (Wert = Mittel je feinem Bucket)
-    long_bucket_factor: Annotated[int, Field(ge=1, le=16)] = 4
-    # Langzeit: grobe Buckets je Seite um den Mid (viel breiter als die feine Spalte)
-    long_half_range_buckets: Annotated[int, Field(gt=0, le=5000)] = 1500
-    # Langzeit: so oft wird das Buch innerhalb eines Intervalls abgetastet
-    long_sample_ms: Annotated[int, Field(ge=100)] = 500
-    # Langzeit-Spalten auf Platte (data_dir/longterm), damit sie Neustarts überstehen
-    long_persist: bool = True
     # Preis-Bucket automatisch je Symbol: Bucket ~ Mid * bucket_bps / 10000, auf ein
     # "rundes" Vielfaches der Tick-Größe gerundet (1, 2, 5, 10, 20, …), mindestens 1 Tick.
     # Damit sehen BTC (Tick 0.10) und XRP (Tick 0.0001) gleich "dicht" aus.
     bucket_bps: Annotated[float, Field(gt=0)] = 0.06
-    # Höchstens so viele Buckets je Seite um den Mid pro Spalte (zugeschnitten auf den
-    # bekannten Bereich des Orderbuchs)
-    half_range_buckets: Annotated[int, Field(gt=0, le=2000)] = 600
+    # Höchstens so viele Buckets je Seite um den Mid pro Spalte. Gesendet werden nur
+    # belegte Buckets (dünn), die Breite kostet daher kaum etwas.
+    half_range_buckets: Annotated[int, Field(gt=0, le=50_000)] = 8000
+    # Level außerhalb eines neuen Snapshots nach einem Neu-Sync so lange als "zuletzt
+    # bekannt" weiterzeigen (Binance liefert per REST nur 1000 Level je Seite)
+    memory_max_age_s: Annotated[float, Field(ge=0)] = 3600.0
+    # Langzeit-Heatmap: Stufen, grobe Buckets je Seite um den Mid, Speichern auf Platte
+    long_tiers: list[LongTierConfig] = Field(default_factory=_default_tiers)
+    long_half_range_buckets: Annotated[int, Field(gt=0, le=20_000)] = 3000
+    long_persist: bool = True
 
 
 class ServerConfig(_Model):
@@ -132,10 +157,10 @@ class ServerConfig(_Model):
     port: Annotated[int, Field(gt=0, lt=65536)] = 8765
     # So viele Spalten bekommt ein neu verbundener Client als Historie (100 ms -> 5 min)
     history_columns: Annotated[int, Field(ge=0)] = 3000
-    # Langzeit-Heatmap-Historie (5 s -> 4320 = 6 h)
-    long_history_columns: Annotated[int, Field(ge=0, le=16000)] = 4320
     # Sendepuffer je Client; ein langsamer Client verliert die ältesten Frames
     client_queue_frames: Annotated[int, Field(gt=0)] = 2000
+    # zusätzlicher Puffer für eine Langzeit-Anfrage (bis ~1500 Spalten + Kerzen)
+    long_queue_frames: Annotated[int, Field(gt=0)] = 4000
 
     @field_validator("host")
     @classmethod

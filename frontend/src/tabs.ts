@@ -10,6 +10,11 @@ import type { Markets } from "./markets";
 
 const KEY = "cockbook.tabs.v1";
 
+/** Tab-IDs: "BTCUSDT" = Live-Chart, "BTCUSDT@long" = Langzeit-Heatmap des Coins. */
+export const LONG_SUFFIX = "@long";
+export const baseSymbol = (id: string) => id.split("@")[0]!;
+export const isLongTab = (id: string) => id.endsWith(LONG_SUFFIX);
+
 /** Reine Tab-Logik (ohne DOM, getestet). */
 export class TabModel {
   tabs: string[] = [];
@@ -168,7 +173,13 @@ export class TabBar {
     root.setAttribute("role", "tab");
     root.draggable = true;
     const dot = el("span", "dot");
-    const name = el("span", "tab-name", this.markets.bySymbol.get(sym)?.label ?? sym);
+    const base = baseSymbol(sym);
+    const name = el("span", "tab-name", this.markets.bySymbol.get(base)?.label ?? base);
+    const kind: HTMLElement[] = [];
+    if (isLongTab(sym)) {
+      root.classList.add("tab-long");
+      kind.push(el("span", "tab-kind", "Langzeit"));
+    }
     const px = el("span", "tab-px num");
     const chg = el("span", "tab-chg num");
     const close = el("button", "tab-close", "×");
@@ -178,7 +189,7 @@ export class TabBar {
       e.stopPropagation();
       this.close(sym);
     });
-    root.append(dot, name, px, chg, close);
+    root.append(dot, name, ...kind, px, chg, close);
     root.addEventListener("click", () => this.cb.onActivate(sym));
     root.addEventListener("auxclick", (e) => {
       if (e.button === 1) this.close(sym);
@@ -217,7 +228,8 @@ export class TabBar {
   /** Preise/Status aktualisieren (2x pro Sekunde). */
   update(): void {
     const mk = this.markets;
-    for (const [sym, t] of this.els) {
+    for (const [id, t] of this.els) {
+      const sym = baseSymbol(id);
       const m = mk.bySymbol.get(sym);
       const price = mk.price(sym);
       const dec = m?.decimals ?? 2;

@@ -36,6 +36,7 @@ async def run(cfg: AppConfig, symbol: str | None) -> None:
             bridge.set_symbol_order(configured_symbols(cfg))
             # Wählt das Frontend einen Coin, startet dessen Orderbuch (falls noch nicht aktiv)
             bridge.on_subscribe = manager.activate
+            bridge.long_handler = feed.long_request
             async with asyncio.TaskGroup() as tg:
                 tg.create_task(feed.run(stop))
                 tg.create_task(manager.run(stop))

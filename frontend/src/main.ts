@@ -7,9 +7,10 @@ import { CYCLE_PRESETS } from "./cycles";
 import { buildDomRows, DOM_W, drawDom } from "./dom";
 import { loadFeatures, saveFeatures } from "./features";
 import { HeatmapRenderer, PRIM, PrimRenderer, RRectRenderer } from "./gl";
-import { coarseColAt, coarseView, type LongParams } from "./longterm";
+import { coarseView, type LongParams } from "./longterm";
+import { LongView } from "./longview";
 import { Markets, decimalsOf } from "./markets";
-import { connect, toFloat32, type Hello } from "./net";
+import { connect, toFloat32, toInt32, type Hello } from "./net";
 import {
   buildBbo,
   buildBubbles,
@@ -22,9 +23,9 @@ import {
 } from "./scene";
 import { drawRsiPane, RSI_PANE_H } from "./rsipane";
 import { Sidebar, type CycleChoice } from "./sidebar";
-import { TabBar, TabModel } from "./tabs";
-import { HeatmapStore, rowsFor, type TradeBin } from "./store";
-import { colToX, panY, priceUnit, recenter, visibleCols, xToCol, yToUnit, zoomX, zoomY, type View } from "./viewport";
+import { baseSymbol, isLongTab, LONG_SUFFIX, TabBar, TabModel } from "./tabs";
+import { downsample, HeatmapStore, rowsFor, type TradeBin } from "./store";
+import { panY, priceUnit, recenter, visibleCols, xToCol, yToUnit, zoomX, zoomY, type View } from "./viewport";
 
 const WS_URL = (import.meta.env.VITE_COCKBOOK_WS as string | undefined) ?? "ws://127.0.0.1:8765/ws";
 const SETTINGS_KEY = "cockbook.settings.v1";
@@ -36,7 +37,9 @@ const DOM_KEY = "cockbook.dom.v1";
 /** So viele Coins bleiben samt Heatmap im Speicher (schneller Tab-Wechsel). */
 const CACHE_SYMBOLS = 4;
 /** Langzeit-Ebene: höchstens so viele Zeilen (Speicher = Spalten x Zeilen x 4 Byte) */
-const LONG_MAX_ROWS = 2048;
+/** Zweite Preis-Ebene zum Herauszoomen: ein Bucket = so viele feine */
+const MIP_FACTOR = 8;
+const LONG_TIER_KEY = "cockbook.longtier.v1";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const chartEl = $<HTMLElement>("chart");
@@ -45,7 +48,6 @@ const yAxisCanvas = $<HTMLCanvasElement>("yaxis");
 const xAxisCanvas = $<HTMLCanvasElement>("xaxis");
 const rsiCanvas = $<HTMLCanvasElement>("rsi");
 const domCanvas = $<HTMLCanvasElement>("dom");
-const ltMark = $<HTMLElement>("ltmark");
 const ltInfo = $<HTMLElement>("ltinfo");
 const crossV = $<HTMLElement>("crossV");
 const crossH = $<HTMLElement>("crossH");
@@ -55,8 +57,8 @@ const thresholdEl = $<HTMLInputElement>("threshold");
 const perfEl = $<HTMLElement>("perf");
 
 const heatmap = new HeatmapRenderer(glCanvas);
-// Langzeit-Ebene: zweiter Renderer auf demselben Canvas/Kontext (eigene Textur)
-const heatmapLong = new HeatmapRenderer(glCanvas);
+// Grobe Preis-Ebene (Herauszoomen): zweiter Renderer auf demselben Canvas/Kontext
+const heatmapMip = new HeatmapRenderer(glCanvas);
 const prims = new PrimRenderer(heatmap.gl);
 const rrects = new RRectRenderer(heatmap.gl);
 const params = new URLSearchParams(location.search);
@@ -81,18 +83,21 @@ try {
 let hello: Hello | null = null;
 let inst: Instrument | null = null;
 let store: HeatmapStore | null = null;
-/** Langzeit-Heatmap (grobe Spalten) */
-let coarse: HeatmapStore | null = null;
+/** Grobe Preis-Ebene: dieselben Spalten, je MIP_FACTOR Buckets zusammengefasst (Maximum) */
+let mip: HeatmapStore | null = null;
 let view: View = { yLo: 0, yHi: 100, colWidth: 2, offset: 0, autoCenter: true };
 let viewInitialized = false;
 let range: ScaleRange | null = null;
+/** Langzeit-Tab aktiv (Live-Chart ausgeblendet) */
+let longActive = false;
+let longTier = loadJson(LONG_TIER_KEY, { tier: "1D" }).tier;
 
 /** Zustand eines Coins, der beim Tab-Wechsel im Speicher bleibt. */
 interface SymbolState {
   hello: Hello | null;
   inst: Instrument | null;
   store: HeatmapStore | null;
-  coarse: HeatmapStore | null;
+  mip: HeatmapStore | null;
   candles: CandleSeries;
   view: View;
   viewInitialized: boolean;
@@ -171,29 +176,22 @@ function scaleSettings(): ScaleSettings {
   return { contrast: Math.pow(2, Number(contrastEl.value)), threshold: Number(thresholdEl.value) };
 }
 
-/** Parameter der Langzeit-Heatmap aus dem hello (ältere Backends: keine). */
-function longParams(): LongParams | null {
-  if (!hello?.long_interval_ms || !hello.long_bucket_factor) return null;
-  return {
-    fineIntervalMs: hello.interval_ms,
-    longIntervalMs: hello.long_interval_ms,
-    factor: hello.long_bucket_factor,
-  };
+/** Abbildung feine -> grobe Preis-Ebene (gleiche Zeitachse, y / MIP_FACTOR). */
+function mipParams(): LongParams | null {
+  return hello ? { fineIntervalMs: hello.interval_ms, longIntervalMs: hello.interval_ms, factor: MIP_FACTOR } : null;
 }
 
-/** Zeit der neuesten feinen Spalte = x-Bezug aller Ebenen (ohne feine: neueste grobe). */
+/** Zeit der neuesten Spalte = x-Bezug aller Ebenen. */
 function latestTs(): number | null {
-  if (store && store.count) return store.ts[store.latest]!;
-  if (coarse && coarse.count) return coarse.ts[coarse.latest]!;
-  return null;
+  return store?.latestTs ?? null;
 }
 
-/** Sicht der Langzeit-Ebene (null = aus oder keine Daten). */
-function longView(): { v: View; lp: LongParams; c: HeatmapStore } | null {
-  const lp = longParams();
-  if (!features.longterm || !lp || !coarse || coarse.count === 0) return null;
-  const fineLatest = store && store.count ? store.ts[store.latest]! : null;
-  return { v: coarseView(view, fineLatest, coarse.ts[coarse.latest]!, lp), lp, c: coarse };
+/** Sicht der groben Preis-Ebene (null = keine Daten). */
+function mipView(): View | null {
+  const mp = mipParams();
+  if (!mp || !mip || mip.count === 0) return null;
+  const t = mip.ts[mip.latest]!;
+  return coarseView(view, t, t, mp);
 }
 
 function fmtSpan(ms: number): string {
@@ -201,19 +199,12 @@ function fmtSpan(ms: number): string {
   return min < 60 ? `${min} min` : `${Math.floor(min / 60)} h ${String(min % 60).padStart(2, "0")} min`;
 }
 
-/** Anzeige im Kopf: wie weit Langzeit- und Live-Heatmap zurückreichen. */
+/** Anzeige im Kopf: wie weit die Live-Heatmap zurückreicht. */
 function updateLongInfo(): void {
-  const now = Date.now();
-  const parts: string[] = [];
-  const lo = coarse?.oldestTs;
-  if (features.longterm && lo != null) parts.push(`Langzeit ${fmtSpan(now - lo)}`);
   const fo = store?.oldestTs;
-  if (fo != null) parts.push(`Live ${fmtSpan(now - fo)}`);
-  ltInfo.textContent = parts.join(" · ");
+  ltInfo.textContent = fo != null && !longActive ? `Live-Historie ${fmtSpan(Date.now() - fo)}` : "";
   ltInfo.title =
-    "Wie weit die Heatmap zurückreicht. Langzeit: Mittel über " +
-    `${(hello?.long_interval_ms ?? 0) / 1000} s, auf Platte gespeichert (übersteht Neustarts). ` +
-    "Live: volle Auflösung, nur im Speicher.";
+    "Volle Auflösung (100 ms), nur im Speicher. Für Stunden bis Wochen: Langzeit-Heatmap (Seitenleiste).";
 }
 
 // --- Layout ------------------------------------------------------------------------------
@@ -268,9 +259,17 @@ const sidebar = new Sidebar(
   features,
   {
     candles1m: () => candles.all(),
+    onOpenLong: () => {
+      if (currentSymbol) activateTab(currentSymbol + LONG_SUFFIX);
+    },
+    onOpenLive: () => {
+      if (longView.symbol) activateTab(longView.symbol);
+    },
+    onLongTier: (t) => longView.setTier(t),
     onToggle: (id, on) => {
       saveFeatures(features);
       featureVersion++;
+      if (id.startsWith("long")) longView.setLayers(longLayers());
       if (id === "candles" && on) fitToCandles();
       if (id === "rsi" || id === "dom") resize();
     },
@@ -288,15 +287,18 @@ const sidebar = new Sidebar(
   candleMinutes,
   cycleChoice,
 );
-const picker = new CoinPicker($<HTMLElement>("picker"), markets, (sym) => selectSymbol(sym));
+// Coin aus dem Menü: im Langzeit-Tab dessen Langzeit-Ansicht, sonst Live-Chart
+const picker = new CoinPicker($<HTMLElement>("picker"), markets, (sym) =>
+  activateTab(longActive ? sym + LONG_SUFFIX : sym),
+);
 const tabModel = new TabModel();
 tabModel.load();
 const tabs = new TabBar($<HTMLElement>("tabs"), markets, tabModel, {
-  onActivate: (sym) => selectSymbol(sym),
+  onActivate: (id) => activateTab(id),
   onAdd: () => picker.open(),
 });
 tabs.render();
-if (tabModel.active) currentSymbol = tabModel.active;
+if (tabModel.active) currentSymbol = baseSymbol(tabModel.active);
 setInterval(() => {
   const now = Date.now();
   sidebar.update(now);
@@ -323,14 +325,56 @@ function setBadge(id: string, text: string, cls: string): void {
 function rememberCurrent(): void {
   if (!currentSymbol || !store) return;
   cache.delete(currentSymbol);
-  cache.set(currentSymbol, { hello, inst, store, coarse, candles, view, viewInitialized });
+  cache.set(currentSymbol, { hello, inst, store, mip, candles, view, viewInitialized });
   while (cache.size > CACHE_SYMBOLS) cache.delete(cache.keys().next().value!);
+}
+
+function longLayers(): { heat: boolean; candles: boolean; liqs: boolean } {
+  return { heat: !!features.longHeat, candles: !!features.longCandles, liqs: !!features.longLiqs };
+}
+
+/** Tab aktivieren: Live-Chart ("BTCUSDT") oder Langzeit-Heatmap ("BTCUSDT@long"). */
+function activateTab(id: string): void {
+  if (isLongTab(id)) openLong(baseSymbol(id));
+  else selectSymbol(id);
+}
+
+function openLong(sym: string): void {
+  tabModel.open(sym + LONG_SUFFIX);
+  tabs.render();
+  longActive = true;
+  chartEl.hidden = true;
+  longView.setLayers(longLayers());
+  longView.open(sym, longTier);
+  sidebar.setMode("long", longTier);
+  sidebar.setActive(sym);
+  picker.setActive(sym);
+  setBadge("sync", "Langzeit", "");
+  updateLongInfo();
+}
+
+function leaveLong(): void {
+  if (!longActive) return;
+  longActive = false;
+  longView.stop();
+  chartEl.hidden = false;
+  sidebar.setMode("live");
+  resize();
+  dataVersion++;
 }
 
 function selectSymbol(sym: string): void {
   tabModel.open(sym);
   tabs.render();
-  if (sym === currentSymbol && store) return;
+  const wasLong = longActive;
+  leaveLong();
+  if (sym === currentSymbol && store) {
+    if (wasLong) {
+      sidebar.setActive(sym);
+      picker.setActive(sym);
+    }
+    return;
+  }
   rememberCurrent();
   currentSymbol = sym;
   try {
@@ -342,18 +386,18 @@ function selectSymbol(sym: string): void {
   range = null;
   if (cached?.store) {
     // Tab-Wechsel zurück: Heatmap liegt noch im Speicher, nur der Rest kommt nach
-    ({ hello, inst, coarse, candles, viewInitialized } = cached);
+    ({ hello, inst, mip, candles, viewInitialized } = cached);
     store = cached.store;
     view = { ...cached.view, colWidth: view.colWidth };
     heatmap.attach(cached.store);
-    if (coarse) heatmapLong.attach(coarse);
+    if (mip) heatmapMip.attach(mip);
     updateRange();
   } else {
     // Chart leeren, bis hello + Historie des neuen Symbols da sind
     hello = null;
     inst = null;
     store = null;
-    coarse = null;
+    mip = null;
     candles = new CandleSeries();
     viewInitialized = false;
     view = { ...view, offset: 0, autoCenter: true };
@@ -362,7 +406,7 @@ function selectSymbol(sym: string): void {
   sidebar.setActive(sym);
   picker.setActive(sym);
   setBadge("sync", "lade …", "");
-  conn.subscribe(sym, store?.latestTs, coarse?.latestTs);
+  conn.subscribe(sym, store?.latestTs);
 }
 
 // --- Daten -------------------------------------------------------------------------------
@@ -383,9 +427,13 @@ const conn = connect(
         tabModel.active = list[0] ?? null;
         tabs.render();
       } else tabs.render();
-      if (!currentSymbol || !list.includes(currentSymbol)) {
-        const next = tabModel.active && list.includes(tabModel.active) ? tabModel.active : list[0];
-        if (next) selectSymbol(next);
+      if (tabModel.active && isLongTab(tabModel.active) && !longActive && list.includes(baseSymbol(tabModel.active))) {
+        activateTab(tabModel.active);
+      } else if (longActive) {
+        /* Langzeit-Tab offen: nichts umschalten */
+      } else if (!currentSymbol || !list.includes(currentSymbol)) {
+        const next = tabModel.active && list.includes(baseSymbol(tabModel.active)) ? tabModel.active : list[0];
+        if (next) activateTab(next);
       } else {
         sidebar.setActive(currentSymbol);
         picker.setActive(currentSymbol);
@@ -398,7 +446,6 @@ const conn = connect(
         x &&
         [
           x.exchange, x.symbol, x.tick_size, x.bucket_ticks, x.interval_ms, x.half_range_buckets,
-          x.long_interval_ms, x.long_bucket_factor, x.long_half_range_buckets,
         ].join("|");
       const changed = key(h) !== key(hello);
       hello = h;
@@ -416,19 +463,16 @@ const conn = connect(
         const maxTex = heatmap.maxTextureSize;
         store = new HeatmapStore(
           Math.min(MAX_HISTORY_COLS, maxTex),
-          rowsFor(h.half_range_buckets, maxTex),
+          rowsFor(Math.min(h.half_range_buckets, 800), maxTex, 2048),
           h.interval_ms,
         );
         heatmap.attach(store);
-        const lp = longParams();
-        if (lp) {
-          coarse = new HeatmapStore(
-            Math.min(h.long_history_columns ?? MAX_HISTORY_COLS, maxTex),
-            rowsFor(h.long_half_range_buckets ?? h.half_range_buckets, maxTex, LONG_MAX_ROWS),
-            lp.longIntervalMs,
-          );
-          heatmapLong.attach(coarse);
-        } else coarse = null;
+        mip = new HeatmapStore(
+          Math.min(MAX_HISTORY_COLS, maxTex),
+          rowsFor(h.half_range_buckets / MIP_FACTOR, maxTex, 2048),
+          h.interval_ms,
+        );
+        heatmapMip.attach(mip);
         viewInitialized = false;
         range = null;
       }
@@ -439,6 +483,9 @@ const conn = connect(
     },
     onStat(f) {
       markets.apply(f);
+    },
+    onLong(m) {
+      longView.onMessage(m);
     },
     onChart(f) {
       if (f.sym !== currentSymbol) return;
@@ -453,18 +500,21 @@ const conn = connect(
       }
       if (!store || !hello) return;
       dataVersion++;
-      if (f.t === "cc") {
-        if (coarse && coarse.pushColumn(f.ts, f.s, f.b, toFloat32(f.q)) >= 0) coarse.setBbo(f.ts, f.bb, f.ba);
-        return;
-      }
       if (f.t === "col") {
         const values = toFloat32(f.q);
-        if (store.pushColumn(f.ts, f.s, f.b, values) < 0) return; // schon vorhanden
+        const idx = f.i ? toInt32(f.i) : null;
+        const center = f.c ?? null;
+        if (store.pushColumn(f.ts, f.s, f.b, values, idx, center) < 0) return; // schon vorhanden
+        if (mip) {
+          const d = downsample(f.b, values, idx, MIP_FACTOR);
+          mip.pushColumn(f.ts, f.s, d.base, d.values, d.idx, center === null ? null : Math.floor(center / MIP_FACTOR));
+        }
         columnsReceived++;
         // Beim Zurückscrollen bleibt der betrachtete Zeitpunkt stehen
         if (view.offset > 0) view = { ...view, offset: Math.min(view.offset + 1, maxOffset()) };
       } else if (f.t === "bbo") {
         store.setBbo(f.ts, f.bb, f.ba);
+        mip?.setBbo(f.ts, f.bb, f.ba);
         if (!viewInitialized && f.bb !== null && f.ba !== null) {
           // Spalten sind auf das bekannte Buch zugeschnitten (nicht symmetrisch) -> am Mid ausrichten
           const center = priceUnit((f.bb + f.ba) / 2, hello.bucket_ticks);
@@ -491,6 +541,13 @@ const conn = connect(
   () => currentSymbol,
 );
 
+const longView = new LongView($<HTMLElement>("longchart"), markets, conn, scaleSettings, (t) => {
+  longTier = t;
+  saveJson(LONG_TIER_KEY, { tier: t });
+  sidebar.setMode("long", t);
+});
+longView.hide();
+
 // --- Farbskala (alle 500 ms aus dem sichtbaren Bereich) -----------------------------------
 
 /** Stichprobe der sichtbaren Werte einer Ebene (max. ~200 x 200). */
@@ -515,10 +572,9 @@ function updateRange(): void {
   const { pw } = plotSize();
   const out: number[] = [];
   if (store && store.count) sampleVisible(store, view, pw, out);
-  // Herausgezoomt/zurückgescrollt: Farbskala auch aus der Langzeit-Ebene, sonst wäre sie
-  // ohne feine Daten im Bild unbestimmt
-  const lv = longView();
-  if (lv) sampleVisible(lv.c, lv.v, pw, out);
+  // Herausgezoomt: Farbskala auch aus der groben Ebene (dort liegt dann der Großteil)
+  const mv = mipView();
+  if (mv && mip) sampleVisible(mip, mv, pw, out);
   if (!out.length) return;
   range = computeRange(Float32Array.from(out), scaleSettings()) ?? range;
 }
@@ -597,6 +653,7 @@ chartEl.addEventListener("dblclick", goLive);
 $<HTMLButtonElement>("live").addEventListener("click", goLive);
 window.addEventListener("keydown", (e) => {
   if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
+  if (longActive) return;
   if (e.key === "c" || e.key === "C") goLive();
   if (e.key === "f" || e.key === "F") fitToCandles();
 });
@@ -635,10 +692,6 @@ function maxOffset(): number {
   if (features.candles && first !== null) {
     cols = Math.max(cols, Math.floor((latest - first) / hello.interval_ms));
   }
-  if (features.longterm && coarse && coarse.count) {
-    const oldest = coarse.ts[coarse.indexAgo(coarse.count - 1)]!;
-    cols = Math.max(cols, Math.floor((latest - oldest) / hello.interval_ms));
-  }
   return cols;
 }
 
@@ -661,20 +714,19 @@ function updateHover(): void {
   const priceRange = (lo: number, n: number) =>
     n === 1 ? formatPrice(lo, inst!) : `${formatPrice(lo, inst!)} – ${formatPrice(lo + n - 1, inst!)}`;
   const lines: string[] = [];
-  const lv = longView();
-  if (k < store.count) {
-    const bucket = Math.floor(unit);
-    lines.push(priceRange(bucket * inst.bucketTicks, inst.bucketTicks), `Liquidität: ${fmtQty(store.valueAt(k, bucket))}`);
-  } else if (lv) {
-    // Vor der feinen Historie: Wert der Langzeit-Ebene (Mittel über Zeit und Preis-Stufen)
-    const j = coarseColAt(k, latest, lv.c.ts[lv.c.latest]!, lv.lp);
-    const cb = Math.floor(unit / lv.lp.factor);
-    const n = inst.bucketTicks * lv.lp.factor;
-    const secs = lv.lp.longIntervalMs / 1000;
-    lines.push(priceRange(cb * n, n), `Liquidität Ø ${secs} s: ${fmtQty(lv.c.valueAt(j, cb))}`);
-  } else {
+  if (k >= store.count) {
     tooltipEl.style.display = "none";
     return;
+  }
+  const bucket = Math.floor(unit);
+  const r = bucket - store.origin;
+  if (r >= 0 && r < store.rows) {
+    lines.push(priceRange(bucket * inst.bucketTicks, inst.bucketTicks), `Liquidität: ${fmtQty(store.valueAt(k, bucket))}`);
+  } else if (mip) {
+    // Außerhalb der feinen Ebene: grobe Ebene (größte Stufe im Bereich)
+    const cb = Math.floor(unit / MIP_FACTOR);
+    const n = inst.bucketTicks * MIP_FACTOR;
+    lines.push(priceRange(cb * n, n), `Liquidität (max. Stufe): ${fmtQty(mip.valueAt(k, cb))}`);
   }
   lines.push(timeLabel(latest - k * hello.interval_ms, true));
   tooltipEl.textContent = lines.join("\n");
@@ -690,7 +742,6 @@ function updateHover(): void {
 const vUnsynced = new VertexBuilder(1024);
 const vGrid = new VertexBuilder(1024);
 const vBbo = new VertexBuilder(16384);
-const vBboLong = new VertexBuilder(16384);
 const vBubbles = new VertexBuilder(4096);
 const vLiqs = new VertexBuilder(256);
 const vCandles = new RRectBuilder();
@@ -699,12 +750,14 @@ function render(): void {
   const { pw, ph } = plotSize();
   const px = dpr * renderScale;
   heatmap.upload();
-  heatmapLong.upload();
-  const lv = features.heatmap ? longView() : null;
-  if (lv && range) {
-    // Langzeit-Ebene zuerst, die feine Heatmap darüber (leere Zellen durchsichtig)
-    heatmapLong.draw(lv.v, range, px, features.smooth);
-    heatmap.draw(view, range, px, features.smooth, true);
+  heatmapMip.upload();
+  const mv = features.heatmap ? mipView() : null;
+  // Feine Buckets je Bildschirm-Pixel: ab ~3 bringt die feine Ebene nichts mehr
+  const bucketsPerPx = (view.yHi - view.yLo) / (ph * px);
+  if (mv && range) {
+    // Grobe Ebene überall, die feine darüber, soweit sie Daten hat
+    heatmapMip.draw(mv, range, px, features.smooth);
+    if (bucketsPerPx < 3) heatmap.draw(view, range, px, features.smooth, true);
   } else {
     heatmap.draw(view, features.heatmap ? range : null, px, features.smooth);
   }
@@ -739,12 +792,6 @@ function render(): void {
     if (features.bbo) {
       buildBbo(p, vBbo);
       prims.draw(PRIM.SOFT_LINE, vBbo.data, vBbo.n, pw, ph, px, LINE.bbo.half, LINE.bbo.feather);
-      if (lv) {
-        // BBO der Langzeit-Ebene nur dort, wo es keine feinen Spalten mehr gibt
-        const kMin = coarseColAt(store.count, store.ts[store.latest]!, lv.c.ts[lv.c.latest]!, lv.lp);
-        buildBbo({ ...p, store: lv.c, view: lv.v, bucketTicks: inst.bucketTicks * lv.lp.factor, kMin }, vBboLong);
-        prims.draw(PRIM.SOFT_LINE, vBboLong.data, vBboLong.n, pw, ph, px, LINE.bbo.half, LINE.bbo.feather);
-      }
     }
     if (features.bubbles) {
       buildBubbles(p, vBubbles);
@@ -760,14 +807,6 @@ function render(): void {
     const data = store && inst ? buildDomRows(store, view, pw, ph, inst.bucketTicks) : null;
     drawDom(domCanvas, dpr, data, view, ph, inst?.bucketTicks ?? 1, { usd: domUsd, tickSize: inst?.tickSize ?? 1 });
   }
-  // Grenze Langzeit | Live: ab hier links nur noch die gröbere Ebene
-  const lvMark = features.heatmap ? longView() : null;
-  const xB = store && store.count && lvMark ? colToX(store.count - 1, view, pw) - view.colWidth / 2 : -1;
-  if (xB > 40 && xB < pw - 40) {
-    ltMark.style.display = "block";
-    ltMark.style.transform = `translate(${Math.round(xB)}px, 0)`;
-    ltMark.style.height = `${ph}px`;
-  } else ltMark.style.display = "none";
   drawTimeAxis(xAxisCanvas, dpr, latestTs(), view, hello?.interval_ms ?? 100, pw);
   if (features.rsi) {
     const scene =

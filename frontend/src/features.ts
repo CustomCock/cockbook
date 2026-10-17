@@ -6,7 +6,7 @@
  * Einstellungen gelten für alle Coins und werden im Browser gespeichert.
  */
 
-export type FeatureGroup = "chart" | "history" | "indicators" | "derivatives" | "planned";
+export type FeatureGroup = "chart" | "long" | "history" | "indicators" | "derivatives" | "planned";
 
 export interface Feature {
   id: string;
@@ -21,8 +21,6 @@ export const FEATURES: Feature[] = [
   // --- Chart-Ebenen -----------------------------------------------------------------
   { id: "heatmap", label: "Liquidity-Heatmap", group: "chart", status: "live", defaultOn: true,
     hint: "Orderbuch-Liquidität je Preis über die Zeit" },
-  { id: "longterm", label: "Langzeit-Heatmap", group: "chart", status: "live", defaultOn: true,
-    hint: "Ältere Liquidität (bis 2 h) als gröbere Ebene unter der Live-Heatmap: Mittel über 2 s und je 2 Preis-Stufen. Beim Herauszoomen in der Zeit sichtbar" },
   { id: "smooth", label: "Weich zeichnen", group: "chart", status: "live", defaultOn: true,
     hint: "Weiche Übergänge zwischen Preis-Leveln statt harter Kanten" },
   { id: "bubbles", label: "Trade-Bubbles", group: "chart", status: "live", defaultOn: true,
@@ -39,6 +37,14 @@ export const FEATURES: Feature[] = [
     hint: "Bid/Ask je Preiszeile am rechten Bildrand (zurückgescrollt: zu diesem Zeitpunkt), gehandeltes Volumen und Delta im sichtbaren Zeitraum. Klick auf die Kopfzeile: Menge ↔ USDT" },
   { id: "rsi", label: "RSI-Fenster", group: "chart", status: "live", defaultOn: true,
     hint: "RSI(14) nach Wilder unter dem Chart, im gewählten Kerzen-Intervall; Linien bei 70 (überkauft) und 30 (überverkauft)" },
+
+  // --- Langzeit-Ansicht (eigener Tab) -----------------------------------------------------
+  { id: "longHeat", label: "Heatmap", group: "long", status: "live", defaultOn: true,
+    hint: "Mittlere Liquidität je Preis über Stunden bis Wochen (vom Backend gesammelt, auf Platte gespeichert)" },
+  { id: "longCandles", label: "Kerzen", group: "long", status: "live", defaultOn: true,
+    hint: "12h: 5m · 1D: 15m · 1W: 1h · 1M: 4h (Binance)" },
+  { id: "longLiqs", label: "Liquidationen je Zeitraum", group: "long", status: "live", defaultOn: true,
+    hint: "Liquidierte Longs (orange) und Shorts (blau) je Spalte, unter dem Chart" },
 
   // --- Langfristig: ATH & Zyklen ---------------------------------------------------------
   { id: "ath", label: "Allzeithoch & Jahr", group: "history", status: "live", defaultOn: true,

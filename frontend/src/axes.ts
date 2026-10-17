@@ -39,10 +39,19 @@ export function gridStepTicks(view: View, ph: number, inst: Instrument): number 
 }
 
 /** Übliche Zeit-Schritte in Sekunden (statt 1-2-5-Folge, die krumme Uhrzeiten ergäbe). */
-const TIME_STEPS = [0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400];
+const TIME_STEPS = [
+  0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200,
+  86400, 172800, 345600, 604800, 1209600,
+];
 
 export function niceTimeStep(rawSec: number): number {
-  return TIME_STEPS.find((s) => s >= rawSec) ?? 86400;
+  return TIME_STEPS.find((s) => s >= rawSec) ?? 1209600;
+}
+
+/** Datum "16.10." (lokale Zeit). */
+export function dateLabel(ms: number): string {
+  const d = new Date(ms);
+  return `${String(d.getDate()).padStart(2, "0")}.${String(d.getMonth() + 1).padStart(2, "0")}.`;
 }
 
 export function timeLabel(ms: number, withMs: boolean, withSec = true): string {
@@ -106,7 +115,10 @@ export function drawPriceAxis(
   }
 }
 
-/** `latestTs`: Zeit der neuesten feinen Spalte (x-Bezug), null = keine Daten. */
+/**
+ * `latestTs`: Zeit der neuesten Spalte (x-Bezug), null = keine Daten.
+ * `dates`: Langzeit-Ansicht – Mitternacht und Schritte ab einem Tag als Datum beschriften.
+ */
 export function drawTimeAxis(
   canvas: HTMLCanvasElement,
   dpr: number,
@@ -114,6 +126,7 @@ export function drawTimeAxis(
   view: View,
   intervalMs: number,
   pw: number,
+  dates = false,
 ): void {
   const ctx = prepare(canvas, dpr);
   if (latestTs === null) return;
@@ -124,12 +137,17 @@ export function drawTimeAxis(
   // Aus der Zeit rechnen statt aus dem Ringpuffer: zurückgescrollt über die feine
   // Historie hinaus (Langzeit-Ebene, Kerzen) gibt es dort keine Spalte mehr.
   const newestTs = latestTs - view.offset * intervalMs;
-  const first = Math.floor(newestTs / 1000 / stepSec) * stepSec * 1000;
+  // Auf lokale Mitternacht ausrichten, damit Tages-Schritte auf 00:00 fallen
+  const tz = new Date(newestTs).getTimezoneOffset() * 60_000;
+  const first = Math.floor((newestTs - tz) / 1000 / stepSec) * stepSec * 1000 + tz;
   for (let ts = first; ; ts -= stepSec * 1000) {
     const x = colToX(view.offset + (newestTs - ts) / intervalMs, view, pw);
     if (x < 30) break;
     if (x < pw - 30) {
-      const label = timeLabel(ts, stepSec < 1, stepSec < 60);
+      const d = new Date(ts);
+      const midnight = d.getHours() === 0 && d.getMinutes() === 0;
+      const label =
+        dates && (stepSec >= 86400 || midnight) ? dateLabel(ts) : timeLabel(ts, stepSec < 1, stepSec < 60);
       ctx.fillText(label, x - ctx.measureText(label).width / 2, 6);
     }
   }

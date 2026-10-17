@@ -10,11 +10,8 @@ export interface Hello {
   tick_size: string;
   bucket_ticks: number;
   interval_ms: number;
-  /** Langzeit-Heatmap: Spaltenbreite und feine Buckets je grobem Bucket */
-  long_interval_ms?: number;
-  long_bucket_factor?: number;
-  long_half_range_buckets?: number;
-  long_history_columns?: number;
+  /** Stufen der Langzeit-Ansicht, z. B. ["12h", "1D", "1W", "1M"] */
+  long_tiers?: string[];
   half_range_buckets: number;
   ui: {
     recenter_margin: number;
@@ -52,8 +49,7 @@ export interface Symbols {
 
 /** Chart-Frames (nur für das abonnierte Symbol). */
 export type ChartFrame =
-  | { t: "col"; sym: string; ts: number; s: boolean; b: number; q: Uint8Array }
-  | { t: "cc"; sym: string; ts: number; s: boolean; b: number; q: Uint8Array; bb: number | null; ba: number | null }
+  | { t: "col"; sym: string; ts: number; s: boolean; b: number; c?: number | null; q: Uint8Array; i?: Uint8Array }
   | { t: "bbo"; sym: string; ts: number; bb: number | null; ba: number | null }
   | { t: "tr"; sym: string; ts: number; x: [number, number, number, number][] }
   | { t: "lq"; sym: string; ts: number; x: [number, number, number][] }
@@ -86,7 +82,7 @@ export type StatFrame =
 export type BinaryFrame = ChartFrame | StatFrame;
 
 export function isChartFrame(f: BinaryFrame): f is ChartFrame {
-  return f.t === "col" || f.t === "cc" || f.t === "bbo" || f.t === "tr" || f.t === "lq" || f.t === "kh" || f.t === "k";
+  return f.t === "col" || f.t === "bbo" || f.t === "tr" || f.t === "lq" || f.t === "kh" || f.t === "k";
 }
 
 export interface Handlers {
@@ -95,6 +91,8 @@ export interface Handlers {
   onStatus(s: Status): void;
   onChart(f: ChartFrame): void;
   onStat(f: StatFrame): void;
+  /** Langzeit-Ansicht: Steuer-Nachrichten und Frames */
+  onLong(m: LongMessage): void;
   onConnection(connected: boolean): void;
 }
 
@@ -104,9 +102,53 @@ export function toFloat32(bytes: Uint8Array): Float32Array {
   return new Float32Array(bytes.slice().buffer);
 }
 
+export function toInt32(bytes: Uint8Array): Int32Array {
+  return new Int32Array(bytes.slice().buffer);
+}
+
+/** Langzeit-Ansicht (eigener Tab). */
+export interface LongHello {
+  type: "long_hello";
+  symbol: string;
+  tier: string;
+  interval_ms: number;
+  span_ms: number;
+  factor: number;
+  bucket_ticks: number | null;
+  tick_size: string | null;
+  columns: number;
+  candle_interval: string;
+  tiers: string[];
+}
+
+export type LongMessage =
+  | LongHello
+  | { type: "long_ready"; symbol: string; tier: string }
+  | {
+      t: "lc";
+      sym: string;
+      tier: string;
+      bt: number;
+      f: number;
+      ts: number;
+      s: boolean;
+      b: number;
+      q: Uint8Array;
+      i?: Uint8Array;
+      bb: number | null;
+      ba: number | null;
+      ll: number;
+      lsh: number;
+    }
+  | { t: "lk"; sym: string; tier: string; iv: string; x: [number, number, number, number, number, number][] };
+
 export interface Connection {
   /** `since`/`sinceLong`: bis hier liegen Spalten schon im Speicher (nur Rest senden) */
-  subscribe(symbol: string, since?: number | null, sinceLong?: number | null): void;
+  subscribe(symbol: string, since?: number | null): void;
+  /** Langzeit-Ansicht öffnen (Archiv + Kerzen), nur Kerzen neu laden, beenden */
+  longOpen(symbol: string, tier: string): void;
+  longKlines(symbol: string, tier: string): void;
+  longOff(): void;
   close(): void;
 }
 
@@ -114,6 +156,8 @@ export function connect(url: string, h: Handlers, initialSymbol: () => string | 
   let ws: WebSocket | null = null;
   let closed = false;
   let delay = 500;
+  // Nach einem Reconnect die Langzeit-Ansicht neu anfordern
+  let longSub: { symbol: string; tier: string } | null = null;
 
   const send = (obj: unknown) => {
     if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
@@ -127,6 +171,7 @@ export function connect(url: string, h: Handlers, initialSymbol: () => string | 
       h.onConnection(true);
       const sym = initialSymbol();
       if (sym) send({ type: "subscribe", symbol: sym });
+      if (longSub) send({ type: "long", ...longSub });
     };
     ws.onmessage = (ev: MessageEvent) => {
       if (typeof ev.data === "string") {
@@ -134,9 +179,11 @@ export function connect(url: string, h: Handlers, initialSymbol: () => string | 
         if (msg.type === "hello") h.onHello(msg as Hello);
         else if (msg.type === "status") h.onStatus(msg as Status);
         else if (msg.type === "symbols") h.onSymbols(msg as Symbols);
+        else if (msg.type === "long_hello" || msg.type === "long_ready") h.onLong(msg as LongMessage);
       } else {
-        const f = decode(new Uint8Array(ev.data as ArrayBuffer)) as BinaryFrame;
-        if (isChartFrame(f)) h.onChart(f);
+        const f = decode(new Uint8Array(ev.data as ArrayBuffer)) as BinaryFrame | Extract<LongMessage, { t: string }>;
+        if (f.t === "lc" || f.t === "lk") h.onLong(f);
+        else if (isChartFrame(f)) h.onChart(f);
         else h.onStat(f);
       }
     };
@@ -149,11 +196,19 @@ export function connect(url: string, h: Handlers, initialSymbol: () => string | 
   };
   open();
   return {
-    subscribe: (symbol: string, since?: number | null, sinceLong?: number | null) => {
+    subscribe: (symbol: string, since?: number | null) => {
       const msg: Record<string, unknown> = { type: "subscribe", symbol };
       if (since != null) msg.since = since;
-      if (sinceLong != null) msg.since_long = sinceLong;
       send(msg);
+    },
+    longOpen: (symbol: string, tier: string) => {
+      longSub = { symbol, tier };
+      send({ type: "long", symbol, tier });
+    },
+    longKlines: (symbol: string, tier: string) => send({ type: "long_klines", symbol, tier }),
+    longOff: () => {
+      longSub = null;
+      send({ type: "long_off" });
     },
     close: () => {
       closed = true;

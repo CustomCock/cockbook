@@ -1006,3 +1006,155 @@ button:hover {
 #dom {
   cursor: default;
 }
+
+/* --- Seitenleiste: Aktion oben -------------------------------------------------------- */
+
+.side-actions {
+  padding-bottom: 10px;
+}
+
+.side-action {
+  width: 100%;
+  padding: 9px 10px;
+  border: 1px solid var(--accent);
+  border-radius: 7px;
+  background: rgba(185, 156, 255, 0.12);
+  color: var(--fg);
+  font: inherit;
+  font-weight: bold;
+  text-align: left;
+  cursor: pointer;
+}
+
+.side-action:hover {
+  background: rgba(185, 156, 255, 0.22);
+}
+
+.long-seg {
+  display: flex;
+  margin-bottom: 8px;
+}
+
+.long-seg button {
+  flex: 1;
+}
+
+#sidebar section[hidden],
+#chart[hidden] {
+  display: none;
+}
+
+/* --- Tabs: Langzeit ------------------------------------------------------------------- */
+
+.tab-kind {
+  padding: 0 5px;
+  border-radius: 4px;
+  background: rgba(185, 156, 255, 0.18);
+  color: var(--accent);
+  font-size: 10px;
+  letter-spacing: 0.03em;
+}
+
+/* --- Langzeit-Ansicht ------------------------------------------------------------------ */
+
+.longview {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  background: var(--plot);
+}
+
+.longview[hidden] {
+  display: none;
+}
+
+.long-bar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.long-title {
+  font-weight: bold;
+}
+
+.long-tiers button {
+  min-width: 46px;
+}
+
+.long-info {
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.long-plot {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.long-plot canvas {
+  position: absolute;
+  left: 0;
+  top: 0;
+}
+
+.cross-v {
+  width: 0;
+  border-left-width: 1px;
+}
+
+.cross-h {
+  height: 0;
+  border-top-width: 1px;
+}
+
+.long-tooltip {
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: none;
+  pointer-events: none;
+  padding: 5px 8px;
+  background: rgba(42, 46, 53, 0.94);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--fg);
+  font-size: 12px;
+  line-height: 16px;
+  white-space: pre;
+}
+
+.long-message {
+  position: absolute;
+  left: 50%;
+  top: 40%;
+  transform: translate(-50%, -50%);
+  max-width: 560px;
+  padding: 14px 18px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(34, 35, 38, 0.92);
+  color: var(--muted);
+  line-height: 1.6;
+  text-align: center;
+  white-space: pre-line;
+  pointer-events: none;
+}
+
+.long-message[hidden] {
+  display: none;
+}
+
+.long-tiers button {
+  min-width: 48px;
+  padding: 4px 12px;
+  font-size: 12.5px;
+}

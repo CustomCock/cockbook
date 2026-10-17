@@ -10,8 +10,11 @@ Kanäle
 
 Steuer-Nachrichten vom Frontend (JSON):
 ``{"type": "subscribe", "symbol": "ETHUSDT", "since": ms, "since_long": ms}``.
-``since``/``since_long`` (optional): Das Frontend hat die Spalten bis zu diesem Zeitpunkt
-noch im Speicher (Tab-Wechsel) – dann kommt nur der fehlende Rest der Historie.
+``since`` (optional): Das Frontend hat die Spalten bis zu diesem Zeitpunkt noch im Speicher
+(Tab-Wechsel) – dann kommt nur der fehlende Rest der Historie.
+``{"type": "long", "symbol": "BTCUSDT", "tier": "1D"}``: Langzeit-Ansicht öffnen (Archiv +
+Kerzen, danach neue Spalten dieser Stufe live); ``{"type": "long_klines", …}`` nur Kerzen
+neu; ``{"type": "long_off"}`` beendet das Langzeit-Abo.
 """
 
 from __future__ import annotations
@@ -21,7 +24,7 @@ import contextlib
 import json
 import logging
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 
 from aiohttp import WSMsgType, web
 
@@ -34,7 +37,7 @@ Frame = str | bytes  # str = JSON-Steuernachricht, bytes = MessagePack
 
 
 class _Channel:
-    def __init__(self, symbol: str, history: int, long_history: int) -> None:
+    def __init__(self, symbol: str, history: int) -> None:
         self.symbol = symbol
         self.hello: str | None = None
         self.status: str | None = None
@@ -42,8 +45,6 @@ class _Channel:
         self.static: dict[str, bytes] = {}
         # eine Gruppe = alle Frames eines Intervalls (mit Zeitstempel in ms)
         self.history: deque[tuple[int, list[bytes]]] = deque(maxlen=max(history, 1))
-        # Langzeit-Heatmap (grobe Spalten)
-        self.long_history: deque[tuple[int, bytes]] = deque(maxlen=max(long_history, 1))
 
 
 class _Client:
@@ -53,6 +54,7 @@ class _Client:
     def __init__(self, ws: web.WebSocketResponse, maxsize: int) -> None:
         self.ws = ws
         self.symbol: str | None = None
+        self.long_sub: tuple[str, str] | None = None  # (Symbol, Stufe) der Langzeit-Ansicht
         self.queue: asyncio.Queue[Frame] = asyncio.Queue(maxsize=maxsize)
         self.dropped = 0
 
@@ -90,6 +92,9 @@ class Bridge:
         # Reihenfolge der Symbole (Config) und Hook beim Abo (Orderbuch bei Bedarf starten)
         self._order: list[str] = []
         self.on_subscribe: Callable[[str], None] | None = None
+        # Liefert die Frames einer Langzeit-Anfrage (Symbol, Stufe, "all" | "klines")
+        self.long_handler: Callable[[str, str, str], Awaitable[list[Frame]]] | None = None
+        self._tasks: set[asyncio.Task[None]] = set()
 
     @property
     def client_count(self) -> int:
@@ -98,9 +103,7 @@ class Bridge:
     def _channel(self, symbol: str) -> _Channel:
         ch = self._channels.get(symbol)
         if ch is None:
-            ch = self._channels[symbol] = _Channel(
-                symbol, self.cfg.history_columns, self.cfg.long_history_columns
-            )
+            ch = self._channels[symbol] = _Channel(symbol, self.cfg.history_columns)
         return ch
 
     def set_symbol_order(self, symbols: list[str]) -> None:
@@ -132,8 +135,6 @@ class Bridge:
         ch = self._channel(symbol)
         if hello != ch.hello:
             ch.history.clear()
-            if ch.hello is not None:
-                ch.long_history.clear()
             ch.hello = hello
             self._send_channel(symbol, hello)
 
@@ -148,11 +149,12 @@ class Bridge:
         for f in frames:
             self._send_channel(symbol, f)
 
-    def publish_long(self, symbol: str, frame: bytes, ts_ms: int = 0) -> None:
-        """Grobe Langzeit-Spalte: eigene, längere Historie."""
-        if self.cfg.long_history_columns:
-            self._channel(symbol).long_history.append((ts_ms, frame))
-        self._send_channel(symbol, frame)
+    def publish_tier(self, symbol: str, tier: str, frame: bytes) -> None:
+        """Neue Spalte einer Langzeit-Stufe an alle, die sie gerade ansehen."""
+        key = (symbol, tier)
+        for c in self._clients:
+            if c.long_sub == key:
+                c.put(frame)
 
     def set_static(self, symbol: str, key: str, frame: bytes) -> None:
         """Ersetzt einen Zustand des Symbols und schickt ihn an aktuelle Abonnenten."""
@@ -189,7 +191,6 @@ class Bridge:
         client: _Client,
         symbol: str,
         since: int | None = None,
-        since_long: int | None = None,
     ) -> None:
         if self.on_subscribe is not None:
             self.on_subscribe(symbol)
@@ -205,9 +206,6 @@ class Bridge:
             client.put(ch.status)
         for frame in ch.static.values():
             client.put(frame)
-        for ts, frame in ch.long_history:
-            if since_long is None or ts > since_long:
-                client.put(frame)
         for ts, group in ch.history:
             if since is None or ts > since:
                 for f in group:
@@ -221,7 +219,7 @@ class Bridge:
         maxsize = (
             self.cfg.client_queue_frames
             + self.cfg.history_columns * 4
-            + self.cfg.long_history_columns
+            + self.cfg.long_queue_frames
             + 1000
         )
         client = _Client(ws, maxsize)
@@ -258,13 +256,37 @@ class Bridge:
             client.clear()
             self._send_base_state(client)
             since = msg.get("since")
-            since_long = msg.get("since_long")
-            self._subscribe(
-                client,
-                msg["symbol"],
-                since if isinstance(since, int) else None,
-                since_long if isinstance(since_long, int) else None,
-            )
+            self._subscribe(client, msg["symbol"], since if isinstance(since, int) else None)
+        elif msg.get("type") in ("long", "long_klines"):
+            sym, tier = msg.get("symbol"), msg.get("tier")
+            if isinstance(sym, str) and isinstance(tier, str):
+                if msg["type"] == "long":
+                    client.long_sub = (sym, tier)
+                    if self.on_subscribe is not None:
+                        self.on_subscribe(sym)  # Orderbuch starten -> ab jetzt Daten sammeln
+                self._spawn(
+                    self._long(client, sym, tier, "all" if msg["type"] == "long" else "klines")
+                )
+        elif msg.get("type") == "long_off":
+            client.long_sub = None
+
+    def _spawn(self, coro: Awaitable[None]) -> None:
+        task = asyncio.ensure_future(coro)
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+    async def _long(self, client: _Client, sym: str, tier: str, what: str) -> None:
+        if self.long_handler is None:
+            return
+        try:
+            frames = await self.long_handler(sym, tier, what)
+        except Exception:
+            log.exception("long request failed", extra={"symbol": sym, "tier": tier})
+            frames = [encode_control("error", message="Langzeit-Daten nicht verfügbar")]
+        # Inzwischen umgeschaltet? Dann nicht mehr senden
+        if client.long_sub == (sym, tier) and client in self._clients:
+            for f in frames:
+                client.put(f)
 
     async def start(self) -> None:
         app = web.Application()

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { HeatmapStore, rowsFor } from "../src/store";
+import { downsample, HeatmapStore, rowsFor } from "../src/store";
 
 const col = (...v: number[]) => Float32Array.from(v);
 
@@ -95,5 +95,25 @@ describe("HeatmapStore", () => {
     expect(s.count).toBe(8);
     expect(s.ts[s.indexAgo(7)]).toBe(100_000 - 7 * 100);
     expect(s.fullDirty).toBe(true);
+  });
+
+  it("dünne Spalten breiter als der Puffer: am Mid ausgerichtet, Rest abgeschnitten", () => {
+    const s = new HeatmapStore(4, 16);
+    // Werte bei 0, 100 (Mid) und 1000 – der Puffer (16 Zeilen) zentriert auf 100
+    s.pushColumn(1, true, 0, Float32Array.from([5, 7, 9]), Int32Array.from([0, 100, 1000]), 100);
+    expect(s.origin).toBe(92);
+    expect(s.valueAt(0, 100)).toBe(7);
+    expect(s.valueAt(0, 0)).toBe(0);
+    // Mid wandert ein wenig: kein Re-Origin (erst im äußeren Fünftel)
+    s.pushColumn(2, true, 100, Float32Array.from([1]), Int32Array.from([0]), 103);
+    expect(s.origin).toBe(92);
+  });
+
+  it("downsample nimmt das Maximum je grobem Bucket", () => {
+    const d = downsample(10, Float32Array.from([1, 4, 2, 8]), Int32Array.from([0, 1, 6, 30]), 8);
+    // Buckets 10, 11 -> 1; 16 -> 2; 40 -> 5
+    expect(d.base).toBe(1);
+    expect([...d.idx]).toEqual([0, 1, 4]);
+    expect([...d.values]).toEqual([4, 2, 8]);
   });
 });

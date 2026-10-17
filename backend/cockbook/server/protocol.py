@@ -7,7 +7,9 @@ verspätete Frames des alten Symbols sicher verwerfen kann.
 
 Chart-Frames (nur an Clients, die das Symbol abonniert haben, mit Historie):
 
-``col``  Heatmap-Spalte    {t, sym, ts, s: synced, b: base_bucket, q: float32-LE-Bytes}
+``col``  Heatmap-Spalte    {t, sym, ts, s: synced, b: base_bucket, q: float32-LE-Bytes,
+                            i: int32-LE-Bytes (optional, dünn: Offset je Wert zu b),
+                            c: Bucket des Mids}
 ``bbo``  Best Bid/Ask      {t, sym, ts, bb: ticks|None, ba: ticks|None}
 ``tr``   Trades            {t, sym, ts, x: [[side, vwap_ticks, qty, n], …]} (+1 Kauf, -1 Verk.)
 ``lq``   Liquidationen     {t, sym, ts, x: [[side, price_ticks, qty], …]} (+1 Short, -1 Long)
@@ -24,8 +26,9 @@ Kennzahl-Frames (an alle Clients, Seitenleiste zeigt alle Coins):
 ``sess``  {sym: Markt, ts, session, start, end}  TradFi-Handelszeit (z. B. COMMODITY)
 ``sync`` {sym, ts, synced, resyncs, reason}  Orderbuch-Diagnose je Coin
 
-Langzeit-Heatmap im Symbol-Kanal: ``cc`` = grobe Spalte {t, sym, bt, f, ts, s, b, q, bb, ba}
-(Bucket = ``f`` feine Buckets, Wert = Mittel je feinem Bucket über ``long_interval_ms``).
+Langzeit-Heatmap (eigener Tab, auf Anfrage je Stufe): ``lc`` = Spalte
+{t, sym, tier, bt, f, ts, s, b, i, q, bb, ba, ll, lsh} (Bucket = ``f`` feine Buckets, Wert =
+Mittel je feinem Bucket), ``lk`` = Kerzen der Stufe {t, sym, tier, iv, x: [[t,o,h,l,c,v],…]}.
 
 Kerzen-Frames im Symbol-Kanal: ``kh`` = 1m-Historie (beim Abo), ``k`` = laufende 1m-Kerze
 {sym, x: [t, o, h, l, c, v, closed]}. 3m/5m/10m baut das Frontend aus 1m.
@@ -73,6 +76,20 @@ def _f32_le(values: array[float]) -> bytes:
     return values.tobytes()
 
 
+def _values(col: HeatmapColumn) -> dict[str, bytes]:
+    """Werte einer Spalte: dicht ``q`` oder dünn ``i`` (int32-Offsets) + ``q``.
+
+    Dünn, weil das Buch über die Zeit weit gestreute Level lernt: Eine dichte Spalte von
+    ±8000 Buckets wären 64 KB je 100 ms, belegt sind meist nur ein paar hundert."""
+    if col.idx is None:
+        return {"q": _f32_le(col.values)}
+    idx = col.idx
+    if sys.byteorder == "big":
+        idx = array("i", idx)
+        idx.byteswap()
+    return {"i": idx.tobytes(), "q": _f32_le(col.values)}
+
+
 def _pack(obj: dict[str, Any]) -> bytes:
     out: bytes = msgpack.packb(obj)
     return out
@@ -88,7 +105,8 @@ def encode_column(symbol: str, col: HeatmapColumn) -> list[bytes]:
                 "ts": ts,
                 "s": col.synced,
                 "b": col.base_bucket,
-                "q": _f32_le(col.values),
+                "c": col.center,
+                **_values(col),
             }
         ),
         _pack({"t": "bbo", "sym": symbol, "ts": ts, "bb": col.best_bid, "ba": col.best_ask}),
@@ -125,24 +143,50 @@ def encode_column(symbol: str, col: HeatmapColumn) -> list[bytes]:
 
 
 def encode_long_column(
-    symbol: str, col: HeatmapColumn, bucket_ticks: int = 0, factor: int = 1
+    symbol: str,
+    tier: str,
+    col: HeatmapColumn,
+    bucket_ticks: int,
+    factor: int,
+    liq_long: float = 0.0,
+    liq_short: float = 0.0,
 ) -> bytes:
-    """``bt``/``f``: feine Bucket-Größe in Ticks und Faktor – nötig, um gespeicherte
-    Spalten nach einem Neustart nur bei gleicher Skalierung wiederzuverwenden."""
+    """Spalte einer Langzeit-Stufe. ``bt``/``f``: feine Bucket-Größe in Ticks und Faktor –
+    gespeicherte Spalten werden nach einem Neustart nur bei gleicher Skalierung genutzt.
+    ``ll``/``lsh``: liquidierte Longs/Shorts im Intervall (USDT)."""
     return _pack(
         {
-            "t": "cc",
+            "t": "lc",
             "sym": symbol,
+            "tier": tier,
             "bt": bucket_ticks,
             "f": factor,
             "ts": col.ts_ns // _NS_PER_MS,
             "s": col.synced,
             "b": col.base_bucket,
-            "q": _f32_le(col.values),
+            **_values(col),
             "bb": col.best_bid,
             "ba": col.best_ask,
+            "ll": round(liq_long, 2),
+            "lsh": round(liq_short, 2),
         }
     )
+
+
+def encode_klines(symbol: str, tier: str, interval: str, bars: list[CandleBar]) -> bytes:
+    return _pack(
+        {
+            "t": "lk",
+            "sym": symbol,
+            "tier": tier,
+            "iv": interval,
+            "x": [
+                [b.open_time_ns // _NS_PER_MS, float(b.open), float(b.high), float(b.low),
+                 float(b.close), float(b.volume)]
+                for b in bars
+            ],
+        }
+    )  # fmt: skip
 
 
 def encode_session(e: MarketSession) -> bytes:

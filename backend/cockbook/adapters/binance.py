@@ -1448,3 +1448,44 @@ class BinanceMarketStats:
                 )
             if ev is not None:
                 await self.bus.publish(ev)
+
+
+class BinanceKlines:
+    """Kerzen beliebiger Intervalle auf Anfrage (Langzeit-Ansicht: 5m/15m/1h/4h).
+
+    ``GET /fapi/v1/klines`` (Doku: market-data/rest-api/Kline-Candlestick-Data, Gewicht
+    je nach ``limit``: <100 -> 1, <500 -> 2, <=1000 -> 5, >1000 -> 10). Ergebnisse werden
+    ``ttl_s`` lang zwischengespeichert – die Ansicht fragt jede Minute nach, mehrere
+    offene Browser-Tabs sollen nicht mehrfach Gewicht kosten.
+    """
+
+    def __init__(self, cfg: BinanceUsdmConfig, ttl_s: float = 30.0) -> None:
+        self.cfg = cfg
+        self.ttl_s = ttl_s
+        self._cache: dict[tuple[str, str, int], tuple[float, list[CandleBar]]] = {}
+        self._session: aiohttp.ClientSession | None = None
+
+    async def get(self, symbol: str, interval: str, limit: int) -> list[CandleBar]:
+        key = (symbol.upper(), interval, limit)
+        hit = self._cache.get(key)
+        if hit is not None and time.monotonic() - hit[0] < self.ttl_s:
+            return hit[1]
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30))
+        params: dict[str, str | int] = {"symbol": key[0], "interval": interval, "limit": limit}
+        try:
+            rows, _ = await get_json(
+                self._session, f"{self.cfg.rest_url}/fapi/v1/klines", params, attempts=2
+            )
+        except RestError as e:
+            log.warning(
+                "klines failed", extra={"symbol": symbol, "interval": interval, "error": str(e)}
+            )
+            return hit[1] if hit else []
+        bars = [parse_kline_row(r) for r in rows]
+        self._cache[key] = (time.monotonic(), bars)
+        return bars
+
+    async def close(self) -> None:
+        if self._session is not None:
+            await self._session.close()

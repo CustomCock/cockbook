@@ -79,37 +79,58 @@ export class HeatmapStore {
    * Hängt eine Spalte an. Spalten, die nicht neuer als die letzte sind, werden
    * ignoriert (Rückgabe -1): Nach einem Reconnect schickt der Server seine Historie
    * erneut, die bereits vorhandenen Spalten dürfen nicht doppelt erscheinen.
+   *
+   * `idx` gesetzt = dünne Spalte: `values[i]` gehört zu Bucket `base + idx[i]`.
+   * `center` = Bucket des Mids. Der Puffer richtet sich daran aus (nicht an der Spalte,
+   * die viel breiter sein kann als der Puffer): verschoben wird erst, wenn der Mid ins
+   * äußere Fünftel läuft. Werte außerhalb des Puffers fallen weg.
    */
-  pushColumn(tsMs: number, synced: boolean, base: number, values: Float32Array): number {
+  pushColumn(
+    tsMs: number,
+    synced: boolean,
+    base: number,
+    values: Float32Array,
+    idx: Int32Array | null = null,
+    center: number | null = null,
+  ): number {
     if (this.count > 0 && tsMs <= this.ts[this.latest]!) return -1;
     if (this.intervalMs > 0 && this.count > 0) this.fillGap(tsMs);
     if (synced && values.length > 0) {
+      const extent = idx ? (idx[idx.length - 1] ?? 0) + 1 : values.length;
+      const anchor = center ?? base + extent / 2;
       if (!this.initialized) {
-        this.origin = Math.round(base + values.length / 2 - this.rows / 2);
+        this.origin = Math.round(anchor - this.rows / 2);
         this.initialized = true;
-      } else if (base < this.origin || base + values.length > this.origin + this.rows) {
-        this.reorigin(Math.round(base + values.length / 2 - this.rows / 2));
+      } else if (anchor < this.origin + this.rows * 0.2 || anchor > this.origin + this.rows * 0.8) {
+        this.reorigin(Math.round(anchor - this.rows / 2));
       }
     }
-    const idx = this.head;
-    const off = idx * this.rows;
+    const idxRow = this.head;
+    const off = idxRow * this.rows;
     this.data.fill(0, off, off + this.rows);
     if (synced && values.length > 0) {
       const start = base - this.origin;
-      const from = Math.max(0, -start);
-      const to = Math.min(values.length, this.rows - start);
-      if (to > from) this.data.set(values.subarray(from, to), off + start + from);
+      if (idx) {
+        for (let i = 0; i < values.length; i++) {
+          const r = start + idx[i]!;
+          if (r >= 0 && r < this.rows) this.data[off + r] = values[i]!;
+        }
+      } else {
+        const from = Math.max(0, -start);
+        const to = Math.min(values.length, this.rows - start);
+        if (to > from) this.data.set(values.subarray(from, to), off + start + from);
+      }
     }
-    this.ts[idx] = tsMs;
-    this.synced[idx] = synced ? 1 : 0;
-    this.bestBid[idx] = NaN;
-    this.bestAsk[idx] = NaN;
-    this.trades[idx] = null;
-    this.liqs[idx] = null;
+    this.ts[idxRow] = tsMs;
+    this.synced[idxRow] = synced ? 1 : 0;
+    this.bestBid[idxRow] = NaN;
+    this.bestAsk[idxRow] = NaN;
+    this.trades[idxRow] = null;
+    this.liqs[idxRow] = null;
     this.head = (this.head + 1) % this.cols;
     this.count = Math.min(this.count + 1, this.cols);
-    this.dirty.add(idx);
-    return idx;
+    this.dirty.add(idxRow);
+    return idxRow;
   }
 
   private fillGap(tsMs: number): void {
@@ -208,4 +229,32 @@ export function rowsFor(halfRange: number, maxTex: number, cap = 4096): number {
   let r = 512;
   while (r < 2.5 * halfRange && r < maxTex && r < cap) r *= 2;
   return Math.min(r, maxTex, cap);
+}
+
+/**
+ * Spalte auf gröbere Preis-Buckets (`factor` feine je grobem) herunterrechnen – für die
+ * zweite Preis-Ebene beim Herauszoomen. Maximum statt Summe/Mittel: Eine Wall soll auch
+ * aus der Ferne so hell bleiben wie in der Nähe, und die Farbskala bleibt dieselbe.
+ */
+export function downsample(
+  base: number,
+  values: Float32Array,
+  idx: Int32Array | null,
+  factor: number,
+): { base: number; values: Float32Array; idx: Int32Array } {
+  const out = new Map<number, number>();
+  for (let i = 0; i < values.length; i++) {
+    const v = values[i]!;
+    if (!v) continue;
+    const b = Math.floor((base + (idx ? idx[i]! : i)) / factor);
+    const prev = out.get(b);
+    if (prev === undefined || v > prev) out.set(b, v);
+  }
+  const keys = [...out.keys()].sort((a, b) => a - b);
+  const cb = keys[0] ?? Math.floor(base / factor);
+  return {
+    base: cb,
+    values: Float32Array.from(keys, (k) => out.get(k)!),
+    idx: Int32Array.from(keys, (k) => k - cb),
+  };
 }

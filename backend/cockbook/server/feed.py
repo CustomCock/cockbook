@@ -13,8 +13,11 @@ import logging
 import time
 from pathlib import Path
 
-from cockbook.config import AggregationConfig, AppConfig, UiConfig
-from cockbook.core.aggregation import HeatmapAggregator, HeatmapColumn, LongTermAccumulator
+import msgpack
+
+from cockbook.adapters.binance import BinanceKlines
+from cockbook.config import AggregationConfig, AppConfig, LongTierConfig, UiConfig
+from cockbook.core.aggregation import HeatmapAggregator, LongTermAccumulator
 from cockbook.core.eventbus import EventBus, Overflow
 from cockbook.core.events import (
     BookDelta,
@@ -35,11 +38,12 @@ from cockbook.core.events import (
     Trade,
 )
 from cockbook.server.bridge import Bridge
-from cockbook.server.longterm_archive import LongTermArchive, frame_ts
+from cockbook.server.longterm_archive import LongTermArchive
 from cockbook.server.protocol import (
     encode_bars,
     encode_column,
     encode_control,
+    encode_klines,
     encode_liquidation,
     encode_live_candle,
     encode_long_column,
@@ -83,7 +87,7 @@ class MarketFeed:
         mode: str = "live",
         labels: dict[str, str] | None = None,
         archive_dir: Path | None = None,
-        long_history_columns: int = 0,
+        klines: BinanceKlines | None = None,
     ) -> None:
         """``symbols``: Symbol -> feste Bucket-Größe in Ticks oder None (automatisch).
 
@@ -96,18 +100,20 @@ class MarketFeed:
         self.bus = bus
         self.bridge = bridge
         self.mode = mode
+        self.cfg = agg_cfg
         self.aggs: dict[str, HeatmapAggregator] = {}
         self._hello_sent: set[str] = set()
         self._candles: dict[str, dict[int, CandleBar]] = {}
         self._candle_dirty: dict[str, tuple[CandleBar, bool]] = {}
         self._resyncs: dict[str, int] = {}
-        self._long: dict[str, LongTermAccumulator] = {}
+        self._long: dict[str, dict[str, LongTermAccumulator]] = {}
         for sym, bt in symbols.items():
             self._add_symbol(sym, bt)
-        # Langzeit-Heatmap auf Platte (None = aus)
+        # Langzeit-Heatmap: Stufen, Archiv auf Platte (None = aus), Kerzen auf Anfrage
+        self.tiers: dict[str, LongTierConfig] = {t.name: t for t in agg_cfg.long_tiers}
         self._archive_dir = archive_dir if agg_cfg.long_persist else None
-        self._archives: dict[str, LongTermArchive] = {}
-        self._long_retention_ms = long_history_columns * agg_cfg.long_interval_ms
+        self._archives: dict[tuple[str, str], LongTermArchive] = {}
+        self.klines = klines
         # Messwerte für die Performance-Auswertung
         self.columns = 0
         self.build_ns_total = 0
@@ -122,20 +128,22 @@ class MarketFeed:
                 bucket_ticks=bucket_ticks,
                 half_range_buckets=self.cfg.half_range_buckets,
                 bucket_bps=self.cfg.bucket_bps,
+                memory_max_age_s=self.cfg.memory_max_age_s,
             )
             self._candles[sym] = {}
             self._resyncs[sym] = 0
-            # Langzeit: das Buch wird direkt abgetastet (schon grob) -> Faktor 1 hier
-            self._long[sym] = LongTermAccumulator(1, pad=self.cfg.long_half_range_buckets)
+            self._long[sym] = {t.name: LongTermAccumulator(t.factor) for t in self.cfg.long_tiers}
         return agg
 
-    def _archive(self, exchange: str) -> LongTermArchive | None:
-        if self._archive_dir is None or self._long_retention_ms <= 0:
+    def _archive(self, exchange: str, tier: LongTierConfig) -> LongTermArchive | None:
+        if self._archive_dir is None:
             return None
-        a = self._archives.get(exchange)
+        a = self._archives.get((exchange, tier.name))
         if a is None:
-            a = self._archives[exchange] = LongTermArchive(
-                self._archive_dir, exchange, self._long_retention_ms
+            # etwas länger aufheben als angezeigt (Rand beim Scrollen)
+            retention = int(tier.span_h * 3_600_000 * 1.05)
+            a = self._archives[(exchange, tier.name)] = LongTermArchive(
+                self._archive_dir, exchange, tier.name, retention
             )
         return a
 
@@ -157,13 +165,15 @@ class MarketFeed:
             bridge,
             labels=labels,
             archive_dir=cfg.recorder.data_dir,
-            long_history_columns=cfg.server.long_history_columns,
+            klines=next((BinanceKlines(ex) for ex in cfg.exchanges if ex.enabled), None),
         )
 
     async def _on_chart_event(self, e: Event) -> None:
         if isinstance(e, Liquidation):
             # Gesamtmarkt: Liste aller Coins; Marker nur für eigene Symbole (Aggregator)
             self.bridge.publish_stat(e.symbol, "liq", encode_liquidation(e))
+            for acc in self._long.get(e.symbol, {}).values():
+                acc.add_liquidation(e.side, float(e.qty * e.price))
         if isinstance(e, CandleHistory) and e.interval == "1d":
             self.bridge.publish_stat(e.symbol, "d1", encode_bars("d1", e.symbol, list(e.bars)))
             return
@@ -245,43 +255,72 @@ class MarketFeed:
                 tick_size=str(agg.instrument.tick_size),
                 bucket_ticks=agg.bucket_ticks,
                 interval_ms=self.cfg.interval_ms,
-                long_interval_ms=self.cfg.long_interval_ms,
-                long_bucket_factor=self.cfg.long_bucket_factor,
-                long_half_range_buckets=self.cfg.long_half_range_buckets,
-                long_history_columns=self.bridge.cfg.long_history_columns,
+                long_tiers=[t.name for t in self.cfg.long_tiers],
                 half_range_buckets=self.cfg.half_range_buckets,
                 ui=self.ui.model_dump(),
             ),
         )
         self._hello_sent.add(symbol)
 
-    async def _load_archive(self, symbol: str, agg: HeatmapAggregator) -> None:
-        """Gespeicherte Langzeit-Spalten (gleiche Skalierung) in die Historie laden."""
-        assert agg.instrument is not None
-        assert agg.bucket_ticks is not None
-        archive = self._archive(agg.instrument.exchange)
-        if archive is None:
-            return
-        now_ms = time.time_ns() // 1_000_000
-        frames = await asyncio.to_thread(
-            archive.load, symbol, now_ms, agg.bucket_ticks, self.cfg.long_bucket_factor
-        )
-        await asyncio.to_thread(archive.prune, symbol, now_ms)
-        for frame in frames:
-            self.bridge.publish_long(symbol, frame, frame_ts(frame))
-        if frames:
-            log.info("longterm history restored", extra={"symbol": symbol, "columns": len(frames)})
-
-    def _publish_long(
-        self, sym: str, agg: HeatmapAggregator, col: HeatmapColumn, ts_ms: int
+    def _publish_tier(
+        self, sym: str, agg: HeatmapAggregator, tier: LongTierConfig, ts_ns: int
     ) -> None:
-        assert agg.bucket_ticks is not None
-        assert agg.instrument is not None
-        frame = encode_long_column(sym, col, agg.bucket_ticks, self.cfg.long_bucket_factor)
-        self.bridge.publish_long(sym, frame, ts_ms)
-        archive = self._archive(agg.instrument.exchange)
-        if archive is not None and col.synced:
-            archive.append(sym, ts_ms, frame)
+        acc = self._long[sym][tier.name]
+        col = acc.take(ts_ns)
+        ll, lsh = acc.take_liquidations()
+        if agg.bucket_ticks is None or agg.instrument is None:
+            return
+        frame = encode_long_column(sym, tier.name, col, agg.bucket_ticks, tier.factor, ll, lsh)
+        self.bridge.publish_tier(sym, tier.name, frame)
+        archive = self._archive(agg.instrument.exchange, tier)
+        if archive is not None and (col.synced or ll or lsh):
+            archive.append(sym, ts_ns // 1_000_000, frame)
+
+    async def long_request(self, symbol: str, tier_name: str, what: str) -> list[str | bytes]:
+        """Daten für die Langzeit-Ansicht: ``what="all"`` = hello + gespeicherte Spalten +
+        Kerzen + ready; ``"klines"`` = nur Kerzen (minütliche Aktualisierung)."""
+        tier = self.tiers.get(tier_name)
+        if tier is None:
+            return [encode_control("error", message=f"unbekannte Stufe {tier_name}")]
+        span_ms = int(tier.span_h * 3_600_000)
+        out: list[str | bytes] = []
+        if what == "all":
+            agg = self.aggs.get(symbol)
+            inst = agg.instrument if agg is not None else None
+            bt = agg.bucket_ticks if agg is not None else None
+            exchange = inst.exchange if inst is not None else "binance_usdm"
+            frames: list[bytes] = []
+            archive = self._archive(exchange, tier)
+            if archive is not None:
+                now_ms = time.time_ns() // 1_000_000
+                frames = await asyncio.to_thread(archive.load, symbol, now_ms, bt, tier.factor)
+                await asyncio.to_thread(archive.prune, symbol, now_ms)
+                if bt is None and frames:
+                    bt = int(msgpack.unpackb(frames[-1])["bt"])
+            out.append(
+                encode_control(
+                    "long_hello",
+                    symbol=symbol,
+                    tier=tier.name,
+                    interval_ms=tier.interval_s * 1000,
+                    span_ms=span_ms,
+                    factor=tier.factor,
+                    bucket_ticks=bt,
+                    tick_size=str(inst.tick_size) if inst is not None else None,
+                    columns=len(frames),
+                    candle_interval=tier.candle_interval,
+                    tiers=[t.name for t in self.cfg.long_tiers],
+                )
+            )
+            out.extend(frames)
+        if self.klines is not None:
+            minutes = _interval_minutes(tier.candle_interval)
+            limit = min(1500, int(span_ms / 60_000 / minutes) + 2) if minutes else 500
+            bars = await self.klines.get(symbol, tier.candle_interval, limit)
+            out.append(encode_klines(symbol, tier.name, tier.candle_interval, bars))
+        if what == "all":
+            out.append(encode_control("long_ready", symbol=symbol, tier=tier.name))
+        return out
 
     async def run(self, stop: asyncio.Event) -> None:
         # Orderbuch-Events dürfen nie verloren gehen -> BLOCK.
@@ -299,8 +338,10 @@ class MarketFeed:
                 overflow=Overflow.DROP_OLDEST,
             )
         interval_ns = self.cfg.interval_ms * 1_000_000
-        long_ns = self.cfg.long_interval_ms * 1_000_000
-        sample_ns = self.cfg.long_sample_ms * 1_000_000
+        tier_ns = [
+            (t, t.sample_s * 1_000_000_000, t.interval_s * 1_000_000_000)
+            for t in self.cfg.long_tiers
+        ]
         last_log = time.monotonic()
         while not stop.is_set():
             # Auf Vielfache des Intervalls ausrichten: Spalten-Zeitstempel sind dann über
@@ -319,24 +360,20 @@ class MarketFeed:
                     continue
                 if sym not in self._hello_sent:
                     self._send_hello(sym, agg)
-                    await self._load_archive(sym, agg)
                 t0 = time.perf_counter_ns()
                 col = agg.make_column(boundary)
                 frames = encode_column(sym, col)
-                long_acc = self._long[sym]
-                if boundary % sample_ns == 0:
-                    long_acc.add(
-                        agg.make_coarse_column(
-                            boundary,
-                            self.cfg.long_bucket_factor,
-                            self.cfg.long_half_range_buckets,
-                        )
-                    )
                 dt = time.perf_counter_ns() - t0
-                ts_ms = boundary // 1_000_000
-                self.bridge.publish(sym, frames, ts_ms)
-                if boundary % long_ns == 0:
-                    self._publish_long(sym, agg, long_acc.take(boundary), ts_ms)
+                self.bridge.publish(sym, frames, boundary // 1_000_000)
+                # Langzeit-Stufen: Buch abtasten, am Intervallende Spalte abschließen
+                bb, ba = col.best_bid, col.best_ask
+                for tier, s_ns, i_ns in tier_ns:
+                    if boundary % s_ns == 0:
+                        self._long[sym][tier.name].add_sample(
+                            agg.coarse_sums(tier.factor, self.cfg.long_half_range_buckets), bb, ba
+                        )
+                    if boundary % i_ns == 0:
+                        self._publish_tier(sym, agg, tier, boundary)
                 self.columns += 1
                 self.build_ns_total += dt
                 self.build_ns_max = max(self.build_ns_max, dt)
@@ -352,3 +389,14 @@ class MarketFeed:
                         "clients": self.bridge.client_count,
                     },
                 )
+        if self.klines is not None:
+            await self.klines.close()
+
+
+def _interval_minutes(iv: str) -> int:
+    """Binance-Intervall ("5m", "1h", "4h", "1d") in Minuten; 0 = unbekannt."""
+    units = {"m": 1, "h": 60, "d": 1440, "w": 10080}
+    try:
+        return int(iv[:-1]) * units[iv[-1]]
+    except (KeyError, ValueError):
+        return 0

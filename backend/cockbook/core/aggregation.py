@@ -28,6 +28,8 @@ from array import array
 from dataclasses import dataclass, field
 from decimal import Decimal
 
+from sortedcontainers import SortedDict
+
 from cockbook.core.events import (
     BookDelta,
     BookSnapshot,
@@ -39,6 +41,8 @@ from cockbook.core.events import (
     Trade,
 )
 from cockbook.core.orderbook import OrderBook
+
+_ZERO = Decimal(0)
 
 
 def nice_ticks(raw: float) -> int:
@@ -83,18 +87,43 @@ class HeatmapColumn:
     ts_ns: int
     synced: bool
     base_bucket: int
-    values: array[float]  # float32, Index = bucket - base_bucket
+    # float32. Dicht: Index = bucket - base_bucket. Dünn (``idx`` gesetzt): nur belegte
+    # Buckets, ``idx[i]`` = bucket - base_bucket von ``values[i]``.
+    values: array[float]
     best_bid: int | None
     best_ask: int | None
     trades: list[TradeBin] = field(default_factory=list)
     # (Seite der Liquidations-Order, Preis in Ticks, Menge) – ASK = Long liquidiert
     liquidations: list[tuple[Side, int, float]] = field(default_factory=list)
+    idx: array[int] | None = None
+    # Bucket des Mids – das Frontend richtet seinen Puffer daran aus, nicht an der
+    # (oft viel breiteren) Spalte
+    center: int | None = None
+
+    def items(self) -> list[tuple[int, float]]:
+        """(bucket, wert) aller belegten Buckets – unabhängig von dicht/dünn."""
+        if self.idx is not None:
+            return [(self.base_bucket + i, v) for i, v in zip(self.idx, self.values, strict=True)]
+        return [(self.base_bucket + i, v) for i, v in enumerate(self.values) if v]
 
 
 class HeatmapAggregator:
     """``bucket_ticks=None``: Bucket wird beim ersten Snapshot aus ``bucket_bps`` bestimmt
     und bleibt dann fest (eine wechselnde Bucket-Größe würde die Historie unbrauchbar
-    machen)."""
+    machen).
+
+    Bucket-Summen werden bei jedem Delta *inkrementell* nachgeführt (exakt in Decimal –
+    float-Summen hätten nach Stunden Rundungsreste, die als Phantom-Liquidität sichtbar
+    würden). Eine Spalte liest dann nur noch die Buckets im Fenster; die Kosten hängen
+    nicht davon ab, wie viele Level das Buch über die Zeit gelernt hat.
+
+    *Gedächtnis über Neu-Syncs*: Binance liefert per REST nur 1000 Level je Seite (bei BTC
+    ±0,2–0,4 % um den Kurs). Alles weiter weg kennt das Buch nur, weil es dort seit dem
+    Sync Änderungen gesehen hat. Ein Neu-Sync würde dieses Wissen verwerfen – die Heatmap
+    schrumpfte auf ein Band um den Kurs, das mit dem Preis mitwandert. Deshalb bleiben
+    Level außerhalb des neuen Snapshots als "zuletzt bekannt" stehen, bis ein Delta sie
+    bestätigt/ändert oder sie ``memory_max_age_s`` alt sind.
+    """
 
     def __init__(
         self,
@@ -102,17 +131,24 @@ class HeatmapAggregator:
         bucket_ticks: int | None,
         half_range_buckets: int,
         bucket_bps: float = 0.06,
+        memory_max_age_s: float = 3600.0,
     ) -> None:
         if (bucket_ticks is not None and bucket_ticks <= 0) or half_range_buckets <= 0:
             raise ValueError("bucket_ticks und half_range_buckets müssen > 0 sein")
         self._bucket_ticks = bucket_ticks
         self.bucket_bps = bucket_bps
         self.half_range = half_range_buckets
+        self.memory_max_age_ns = int(memory_max_age_s * 1e9)
         self.book = OrderBook()
         self.synced = False
         self.instrument: InstrumentInfo | None = None
         self._trades: dict[tuple[Side, int], TradeBin] = {}
         self._liqs: list[tuple[Side, int, float]] = []
+        # Bucket -> Summe der Mengen (live Buch bzw. Gedächtnis)
+        self._buckets: SortedDict[int, Decimal] = SortedDict()
+        self._mem: dict[int, tuple[Decimal, int]] = {}  # Preis -> (Menge, Zeit ns)
+        self._mem_buckets: SortedDict[int, Decimal] = SortedDict()
+        self._last_prune_ns = 0
 
     @property
     def bucket_ticks(self) -> int | None:
@@ -127,10 +163,58 @@ class HeatmapAggregator:
         assert self._bucket_ticks is not None
         return price_ticks // self._bucket_ticks
 
+    # --- Bucket-Summen ------------------------------------------------------------------
+
+    @staticmethod
+    def _add(target: SortedDict[int, Decimal], b: int, dq: Decimal) -> None:
+        v = target.get(b, _ZERO) + dq
+        if v == _ZERO:
+            target.pop(b, None)
+        else:
+            target[b] = v
+
+    def _rebuild_buckets(self) -> None:
+        self._buckets.clear()
+        if self._bucket_ticks is None:
+            return
+        bt = self._bucket_ticks
+        for side in (Side.BID, Side.ASK):
+            for p, q in self.book.side(side).items():
+                self._add(self._buckets, p // bt, q)
+        self._mem_buckets.clear()
+        for p, (q, _) in self._mem.items():
+            self._add(self._mem_buckets, p // bt, q)
+
+    def _forget(self, price: int) -> None:
+        """Gedächtnis-Level entfernen (jetzt live bekannt oder zu alt)."""
+        old = self._mem.pop(price, None)
+        if old is not None and self._bucket_ticks is not None:
+            self._add(self._mem_buckets, price // self._bucket_ticks, -old[0])
+
+    def _remember_book(self, ts_ns: int) -> None:
+        for side in (Side.BID, Side.ASK):
+            for p, q in self.book.side(side).items():
+                self._forget(p)
+                self._mem[p] = (q, ts_ns)
+                if self._bucket_ticks is not None:
+                    self._add(self._mem_buckets, p // self._bucket_ticks, q)
+
+    def _prune_memory(self, now_ns: int) -> None:
+        if now_ns - self._last_prune_ns < 10_000_000_000 or not self._mem:
+            return
+        self._last_prune_ns = now_ns
+        limit = now_ns - self.memory_max_age_ns
+        for p in [p for p, (_, ts) in self._mem.items() if ts < limit]:
+            self._forget(p)
+
+    @property
+    def remembered_levels(self) -> int:
+        return len(self._mem)
+
     # --- Eingang ------------------------------------------------------------------------
 
     def on_event(self, e: Event) -> None:
-        if isinstance(e, BookSnapshot | BookDelta):
+        if isinstance(e, BookSnapshot):
             self.book.apply_event(e)
             if self._bucket_ticks is None and self.instrument is not None:
                 bb, ba = self.book.best_bid(), self.book.best_ask()
@@ -139,10 +223,30 @@ class HeatmapAggregator:
                     self._bucket_ticks = auto_bucket_ticks(
                         mid, self.instrument.tick_size, self.bucket_bps
                     )
+            # Gedächtnis im Bereich des Snapshots ist jetzt durch echte Daten ersetzt
+            ext = self.book.extent()
+            if ext is not None and self._mem:
+                lo, hi = ext
+                for p in [p for p in self._mem if lo <= p <= hi]:
+                    self._mem.pop(p)
+            self._rebuild_buckets()
+        elif isinstance(e, BookDelta):
+            bt = self._bucket_ticks
+            if bt is not None:
+                for side, levels in ((Side.BID, e.bids), (Side.ASK, e.asks)):
+                    for lvl in levels:
+                        old = self.book.qty(side, lvl.price_ticks)
+                        if lvl.qty != old:
+                            self._add(self._buckets, lvl.price_ticks // bt, lvl.qty - old)
+                        if self._mem:
+                            self._forget(lvl.price_ticks)
+            self.book.apply_event(e)
         elif isinstance(e, BookSyncStatus):
             self.synced = e.synced
             if not e.synced:
+                self._remember_book(e.ts_ns)
                 self.book.clear()
+                self._buckets.clear()
         elif isinstance(e, Trade):
             if self._bucket_ticks is None:
                 return
@@ -161,6 +265,13 @@ class HeatmapAggregator:
 
     # --- Ausgang ------------------------------------------------------------------------
 
+    def _window(self, lo_b: int, hi_b: int) -> dict[int, Decimal]:
+        """Bucket-Summen (live + Gedächtnis) mit ``lo_b <= bucket <= hi_b``."""
+        out: dict[int, Decimal] = {b: self._buckets[b] for b in self._buckets.irange(lo_b, hi_b)}
+        for b in self._mem_buckets.irange(lo_b, hi_b):
+            out[b] = out.get(b, _ZERO) + self._mem_buckets[b]
+        return out
+
     def make_column(self, ts_ns: int) -> HeatmapColumn:
         trades = list(self._trades.values())
         self._trades = {}
@@ -168,109 +279,107 @@ class HeatmapAggregator:
         bb, ba = self.book.best_bid(), self.book.best_ask()
         if not self.synced or bb is None or ba is None or self._bucket_ticks is None:
             return HeatmapColumn(ts_ns, False, 0, array("f"), None, None, trades, liqs)
-
-        base, values = self._book_values(self._bucket_ticks, self.half_range, mean=False)
+        self._prune_memory(ts_ns)
+        center = self.bucket((bb.price_ticks + ba.price_ticks) // 2)
+        win = self._window(center - self.half_range, center + self.half_range - 1)
+        keys = sorted(b for b, v in win.items() if v > 0)
+        if not keys:
+            return HeatmapColumn(
+                ts_ns, True, center, array("f"), bb.price_ticks, ba.price_ticks, trades, liqs,
+                array("i"), center,
+            )  # fmt: skip
+        base = keys[0]
         return HeatmapColumn(
-            ts_ns, True, base, values, bb.price_ticks, ba.price_ticks, trades, liqs
+            ts_ns,
+            True,
+            base,
+            array("f", (float(win[b]) for b in keys)),
+            bb.price_ticks,
+            ba.price_ticks,
+            trades,
+            liqs,
+            array("i", (b - base for b in keys)),
+            center,
         )
 
-    def _book_values(self, size_ticks: int, half: int, *, mean: bool) -> tuple[int, array[float]]:
-        """Liquidität je Bucket der Größe ``size_ticks`` im bekannten Buch, höchstens
-        ``half`` Buckets je Seite um den Mid. ``mean``: je Tick-Bucket der Feinauflösung
-        mitteln (Dichte), damit grobe und feine Werte dieselbe Farbskala vertragen."""
-        bb, ba = self.book.best_bid(), self.book.best_ask()
-        assert bb is not None
-        assert ba is not None
-        center = ((bb.price_ticks + ba.price_ticks) // 2) // size_ticks
-        lowest, highest = self.book.extent() or (bb.price_ticks, ba.price_ticks)
-        base = max(center - half, lowest // size_ticks)
-        end = min(center + half, highest // size_ticks + 1)  # exklusiv
-        values = array("f", bytes(4 * (end - base)))
-        lo_ticks, hi_ticks = base * size_ticks, end * size_ticks - 1
-        for side in (Side.BID, Side.ASK):
-            for lvl in self.book.range(side, lo_ticks, hi_ticks):
-                values[lvl.price_ticks // size_ticks - base] += float(lvl.qty)
-        if mean and self._bucket_ticks:
-            k = size_ticks / self._bucket_ticks
-            for i, v in enumerate(values):
-                if v:
-                    values[i] = v / k
-        return base, values
-
-    def make_coarse_column(self, ts_ns: int, factor: int, half: int) -> HeatmapColumn:
-        """Momentaufnahme für die Langzeit-Heatmap: Buckets = ``factor`` feine Buckets,
-        bis ``half`` grobe Buckets je Seite (deutlich breiter als die feine Spalte)."""
+    def coarse_sums(self, factor: int, half: int) -> dict[int, float] | None:
+        """Momentaufnahme für die Langzeit-Heatmap: Summe je grobem Bucket (= ``factor``
+        feine Buckets), höchstens ``half`` grobe Buckets je Seite um den Mid.
+        None = Buch nicht synchron."""
         bb, ba = self.book.best_bid(), self.book.best_ask()
         if not self.synced or bb is None or ba is None or self._bucket_ticks is None:
-            return HeatmapColumn(ts_ns, False, 0, array("f"), None, None)
-        base, values = self._book_values(self._bucket_ticks * factor, half, mean=True)
-        return HeatmapColumn(ts_ns, True, base, values, bb.price_ticks, ba.price_ticks)
+            return None
+        center = self.bucket((bb.price_ticks + ba.price_ticks) // 2) // factor
+        win = self._window((center - half) * factor, (center + half + 1) * factor - 1)
+        out: dict[int, float] = {}
+        for b, v in win.items():
+            if v > 0:
+                cb = b // factor
+                out[cb] = out.get(cb, 0.0) + float(v)
+        return out
 
 
 class LongTermAccumulator:
-    """Mittelt feine Heatmap-Spalten zu groben Langzeit-Spalten.
+    """Eine Stufe der Langzeit-Heatmap (z. B. 1-Minuten-Spalten für die 1D-Ansicht).
 
-    - Zeit: alle Spalten eines Langzeit-Intervalls (z. B. 50 x 100 ms = 5 s)
-    - Preis: je ``factor`` Buckets zu einem
+    Innerhalb eines Intervalls wird das Buch mehrmals abgetastet (``add_sample``); die
+    Spalte ist der *Mittelwert* je grobem Bucket, ausgedrückt als Dichte je feinem Bucket
+    (Summe / Abtastungen / ``factor``) – so vertragen alle Stufen dieselbe Farbskala.
+    Mittelwert statt Maximum: über Minuten zählt, wie *dauerhaft* Liquidität dort lag; ein
+    Maximum ließe jede kurz aufblitzende Order wie eine Wall aussehen.
 
-    Mittelwert statt Maximum: über Sekunden zählt, wie *dauerhaft* Liquidität dort lag.
-    Ein Maximum ließe jede kurz aufblitzende Order wie eine echte Wall aussehen.
-
-    Feine Spalten sind unterschiedlich lang (bekannter Buchbereich). Der Puffer ist daher
-    um die erste Spalte des Intervalls angelegt und auf jeder Seite um ``pad`` Buckets
-    breiter; was trotzdem herausfällt (Preis springt im Intervall um mehr als ``pad``),
-    wird ignoriert. ``take`` schneidet leere Ränder ab.
+    Zusätzlich: Liquidationen (USDT) im Intervall, getrennt nach Longs/Shorts.
     """
 
-    def __init__(self, factor: int, pad: int = 0) -> None:
+    def __init__(self, factor: int) -> None:
         if factor < 1:
             raise ValueError("factor muss >= 1 sein")
         self.factor = factor
-        self.pad = max(pad, 0)
-        self._sum: list[float] | None = None
-        self._base = 0  # grober Bucket von _sum[0]
+        self._sum: dict[int, float] = {}
         self._count = 0
         self._bb: int | None = None
         self._ba: int | None = None
+        self.liq_long = 0.0
+        self.liq_short = 0.0
 
-    def add(self, col: HeatmapColumn) -> None:
-        if not col.synced or not col.values:
+    def add_sample(self, sums: dict[int, float] | None, bb: int | None, ba: int | None) -> None:
+        if sums is None:
             return
-        f = self.factor
-        if self._sum is None:
-            lo = (col.base_bucket - self.pad) // f
-            hi = (col.base_bucket + len(col.values) + self.pad) // f + 1
-            self._base = lo
-            self._sum = [0.0] * (hi - lo + 1)
         s = self._sum
-        n = len(s)
-        start = col.base_bucket
-        base = self._base
-        for i, v in enumerate(col.values):
-            if v:
-                idx = (start + i) // f - base
-                if 0 <= idx < n:
-                    s[idx] += v
+        for b, v in sums.items():
+            s[b] = s.get(b, 0.0) + v
         self._count += 1
-        self._bb, self._ba = col.best_bid, col.best_ask
+        self._bb, self._ba = bb, ba
+
+    def add_liquidation(self, side: Side, usd: float) -> None:
+        # Liquidations-Order SELL (ASK) = Long liquidiert
+        if side is Side.ASK:
+            self.liq_long += usd
+        else:
+            self.liq_short += usd
 
     def take(self, ts_ns: int) -> HeatmapColumn:
-        """Liefert die grobe Spalte des abgelaufenen Intervalls und setzt zurück."""
-        s = self._sum
-        if s is None or self._count == 0:
-            col = HeatmapColumn(ts_ns, False, 0, array("f"), None, None)
+        """Liefert die grobe Spalte des abgelaufenen Intervalls (dünn) und setzt zurück."""
+        if not self._sum or self._count == 0:
+            col = HeatmapColumn(ts_ns, False, 0, array("f"), None, None, idx=array("i"))
         else:
-            first = next((i for i, v in enumerate(s) if v), 0)
-            last = next((i for i in range(len(s) - 1, -1, -1) if s[i]), first - 1)
-            div = self._count * self.factor  # Mittel über Zeit und zusammengefasste Buckets
+            keys = sorted(self._sum)
+            base = keys[0]
+            div = self._count * self.factor
             col = HeatmapColumn(
                 ts_ns,
                 True,
-                self._base + first,
-                array("f", (v / div for v in s[first : last + 1])),
+                base,
+                array("f", (self._sum[b] / div for b in keys)),
                 self._bb,
                 self._ba,
+                idx=array("i", (b - base for b in keys)),
             )
-        self._sum = None
+        self._sum = {}
         self._count = 0
         return col
+
+    def take_liquidations(self) -> tuple[float, float]:
+        out = (self.liq_long, self.liq_short)
+        self.liq_long = self.liq_short = 0.0
+        return out

@@ -110,20 +110,24 @@ aggregation:
   interval_ms: 100        # Breite einer Heatmap-Spalte
   bucket_bps: 0.06        # Preis-Bucket ~ 0.06 Basispunkte des Preises, je Symbol automatisch
                           # auf runde Tick-Vielfache gerundet (BTC ~80k -> 0.50 USDT)
-  half_range_buckets: 600 # max. Buckets je Seite um den Mid (BTC: 600 x 0.50 = +-300 USDT),
-                          # zugeschnitten auf den bekannten Bereich des Orderbuchs
-  # Langzeit-Heatmap: tastet das Buch selbst ab, breiter und gröber als die Live-Heatmap
-  long_interval_ms: 5000        # eine Spalte = Mittel über 5 s
-  long_sample_ms: 500           # Abtastung des Buchs innerhalb der 5 s
-  long_bucket_factor: 4         # ein Bucket = 4 feine (BTC: 2 USDT)
-  long_half_range_buckets: 1500 # je Seite (BTC: 1500 x 2 = +-3000 USDT, zugeschnitten aufs Buch)
-  long_persist: true            # auf Platte (data/longterm), übersteht Neustarts
+  half_range_buckets: 8000  # max. Buckets je Seite um den Mid (BTC: 8000 x 0.50 = +-4000 USDT);
+                            # gesendet werden nur belegte Buckets
+  memory_max_age_s: 3600    # Level außerhalb eines neuen Snapshots nach Neu-Sync so lange
+                            # als "zuletzt bekannt" zeigen (REST liefert nur 1000 Level/Seite)
+  # Langzeit-Heatmap (eigener Tab): je Stufe eigene Auflösung, auf Platte (data/longterm)
+  long_persist: true
+  long_half_range_buckets: 3000   # grobe Buckets je Seite um den Mid
+  long_tiers:
+    #  Zeitraum | eine Spalte | Abtastung | Bucket = n feine | Kerzen
+    - {name: "12h", span_h: 12,  interval_s: 30,   sample_s: 2,  factor: 8,   candle_interval: 5m}
+    - {name: "1D",  span_h: 24,  interval_s: 60,   sample_s: 3,  factor: 16,  candle_interval: 15m}
+    - {name: "1W",  span_h: 168, interval_s: 600,  sample_s: 10, factor: 40,  candle_interval: 1h}
+    - {name: "1M",  span_h: 744, interval_s: 1800, sample_s: 30, factor: 100, candle_interval: 4h}
 
 server:
   host: 127.0.0.1         # nur Loopback erlaubt
   port: 8765
   history_columns: 3000   # Historie für neu verbundene Clients (3000 x 100 ms = 5 min)
-  long_history_columns: 4320  # Langzeit-Heatmap (4320 x 5 s = 6 h)
   client_queue_frames: 2000
 
 ui:

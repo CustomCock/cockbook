@@ -16,7 +16,13 @@ export interface CycleChoice {
   end: string;
 }
 
+export type SidebarMode = "live" | "long";
+
 export interface SidebarCallbacks {
+  /** Langzeit-Ansicht des aktuellen Coins öffnen bzw. zurück zum Live-Chart */
+  onOpenLong(): void;
+  onOpenLive(): void;
+  onLongTier(tier: string): void;
   /** 1m-Kerzen des gewählten Coins (für die RSI-Übersicht) */
   candles1m(): Bar[];
   onToggle(id: string, on: boolean): void;
@@ -114,6 +120,10 @@ export class Sidebar {
   private cycleEnd!: HTMLInputElement;
   private customBox!: HTMLElement;
   private liqBars: HTMLElement[] = [];
+  private mode: SidebarMode = "live";
+  private sections: { el: HTMLElement; modes: SidebarMode[] }[] = [];
+  private actionBtn!: HTMLButtonElement;
+  private tierButtons = new Map<string, HTMLButtonElement>();
 
   constructor(
     root: HTMLElement,
@@ -124,6 +134,35 @@ export class Sidebar {
     private cycle: CycleChoice,
   ) {
     root.replaceChildren();
+
+    // Aktion oben: zur Langzeit-Heatmap bzw. zurück
+    const actions = el("section", "side-actions");
+    this.actionBtn = el("button", "side-action");
+    this.actionBtn.type = "button";
+    this.actionBtn.addEventListener("click", () => (this.mode === "live" ? cb.onOpenLong() : cb.onOpenLive()));
+    actions.append(this.actionBtn);
+
+    // Langzeit-Ansicht: Zeitraum + Ebenen
+    const long = el("section");
+    long.append(el("h3", "", "Langzeit-Heatmap"));
+    const seg = el("div", "seg long-seg");
+    for (const t of ["12h", "1D", "1W", "1M"]) {
+      const b = el("button", "", t);
+      b.type = "button";
+      b.addEventListener("click", () => cb.onLongTier(t));
+      this.tierButtons.set(t, b);
+      seg.append(b);
+    }
+    long.append(seg);
+    for (const f of FEATURES.filter((x) => x.group === "long")) long.append(this.toggle(f.id, f.label, f.hint));
+    long.append(
+      el(
+        "div",
+        "hint",
+        "Gesammelt vom Backend, solange das Orderbuch des Coins läuft (always_on in config.yaml = immer). " +
+          "Gespeichert unter data/longterm, übersteht Neustarts.",
+      ),
+    );
 
     // Chart-Ebenen
     const chart = el("section");
@@ -194,7 +233,16 @@ export class Sidebar {
       planned.append(item);
     }
 
-    root.append(chart, hist, ind, deriv, planned);
+    root.append(actions, long, chart, hist, ind, deriv, planned);
+    this.sections = [
+      { el: long, modes: ["long"] },
+      { el: chart, modes: ["live"] },
+      { el: hist, modes: ["long"] },
+      { el: ind, modes: ["live"] },
+      { el: deriv, modes: ["live", "long"] },
+      { el: planned, modes: ["live"] },
+    ];
+    this.setMode("live");
   }
 
   private toggle(id: string, label: string, hint: string): HTMLElement {
@@ -274,6 +322,18 @@ export class Sidebar {
     }
     box.append(this.cycleSelect, this.customBox);
     return box;
+  }
+
+  /** Live-Chart oder Langzeit-Ansicht: zeigt die jeweils passenden Abschnitte. */
+  setMode(mode: SidebarMode, tier?: string): void {
+    this.mode = mode;
+    for (const s of this.sections) s.el.hidden = !s.modes.includes(mode);
+    this.actionBtn.textContent = mode === "live" ? "▦  Langzeit-Heatmap öffnen" : "←  Zurück zum Live-Chart";
+    this.actionBtn.title =
+      mode === "live"
+        ? "Heatmap über 12 Stunden bis 1 Monat mit Kerzen, Liquidationen, ATH & Zyklen (neuer Tab)"
+        : "Live-Heatmap dieses Coins (Tab)";
+    if (tier) for (const [t, b] of this.tierButtons) b.classList.toggle("on", t === tier);
   }
 
   setActive(symbol: string): void {

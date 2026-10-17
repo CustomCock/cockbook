@@ -45,7 +45,7 @@ uniform float uLogHi;
 uniform vec3 uBg;
 uniform bool uSmooth;      // weich interpolieren statt harter Zellen
 uniform int uTaps;         // vertikale Glättung: 1 = nur bilinear, 3 = zusätzlich ±2 px
-uniform bool uOverlay;     // über einer anderen Ebene: leere Zellen durchsichtig
+uniform bool uOverlay;     // über einer gröberen Ebene: außerhalb des eigenen Bereichs durchsichtig
 out vec4 outColor;
 
 float fetch(int k, int r) {
@@ -74,6 +74,12 @@ void main() {
   float u = uYLo + frag.y * unitsPerPx;               // Preis-Zeile (kontinuierlich)
   // Herausgezoomt: mehrere Spalten/Zeilen pro Pixel -> Maximum nehmen, damit
   // einzelne Walls nicht durch Aliasing verschwinden (auf 4x4 begrenzt).
+  if (uOverlay) {
+    // Nur dort zeichnen, wo diese Ebene Daten hat; daneben bleibt die gröbere sichtbar
+    int k = int(floor(cf));
+    int r = int(floor(u));
+    if (cf < 0.0 || k >= uCount || r < 0 || r >= uRows) discard;
+  }
   int nk = clamp(int(ceil(1.0 / uColW)), 1, 4);
   int nr = clamp(int(ceil(unitsPerPx)), 1, 4);
   float v;
@@ -103,7 +109,6 @@ void main() {
     v = fetch(int(floor(cf)), int(floor(u)));
   }
   if (v <= 0.0) {
-    if (uOverlay) discard;
     outColor = vec4(uBg, 1.0);
     return;
   }
@@ -111,11 +116,6 @@ void main() {
   vec3 c = texture(uLut, vec2(t * (255.0 / 256.0) + 0.5 / 256.0, 0.5)).rgb;
   // Schwelle weich ausblenden statt hart abschneiden
   float alpha = uThreshold > 0.0 ? smoothstep(uThreshold * 0.6, uThreshold, v) : 1.0;
-  if (uOverlay) {
-    if (alpha <= 0.0) discard;
-    outColor = vec4(c * alpha, alpha);  // vormultipliziert, Blending ONE / ONE_MINUS_SRC_ALPHA
-    return;
-  }
   outColor = vec4(mix(uBg, c, alpha), 1.0);
 }`;
 
@@ -216,8 +216,8 @@ export class HeatmapRenderer {
 
   /**
    * `pxScale` = Device-Pixel pro CSS-Pixel *dieses* Canvas (dpr x Render-Skala).
-   * `overlay`: nicht löschen, leere Zellen durchsichtig lassen (feine Heatmap über der
-   * Langzeit-Ebene). Mehrere Renderer können sich ein Canvas teilen –
+   * `overlay`: nicht löschen und nur innerhalb des eigenen Bereichs (Zeit x Preis)
+   * zeichnen – die feine Ebene über der gröberen Preis-Ebene. Mehrere Renderer können sich ein Canvas teilen –
    * `getContext("webgl2")` liefert für dasselbe Canvas immer denselben Kontext.
    */
   draw(view: View, range: ScaleRange | null, pxScale: number, smooth = true, overlay = false): void {
@@ -260,12 +260,8 @@ export class HeatmapRenderer {
     // Hochskalieren der halben Auflösung durch den Browser glättet zusätzlich.
     gl.uniform1i(u.uTaps!, this.isSoftware ? 1 : 3);
     gl.uniform1i(u.uOverlay!, overlay ? 1 : 0);
-    if (overlay) {
-      gl.enable(gl.BLEND);
-      gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
-    } else gl.disable(gl.BLEND);
-    gl.drawArrays(gl.TRIANGLES, 0, 3);
     gl.disable(gl.BLEND);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
 }
 

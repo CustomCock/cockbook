@@ -1,7 +1,7 @@
 """Langzeit-Heatmap auf Platte, damit sie Neustarts übersteht.
 
-Ablage: ``<data_dir>/longterm/<exchange>/<SYMBOL>/<YYYY-MM-DD>.msgpack`` – die fertigen
-``cc``-Frames (MessagePack) einfach hintereinander angehängt. Anhängen statt die ganze
+Ablage: ``<data_dir>/longterm/<exchange>/<SYMBOL>/<stufe>/<YYYY-MM-DD>.msgpack`` – die
+fertigen ``lc``-Frames (MessagePack) einfach hintereinander angehängt. Anhängen statt die ganze
 Historie regelmäßig neu zu schreiben: ein Frame (~ein paar KB) alle 5 s kostet nichts,
 und ein Absturz verliert höchstens den letzten Frame. Tagesdateien lassen sich nach
 Ablauf der Aufbewahrung einfach löschen.
@@ -29,12 +29,13 @@ def _day(ts_ms: int) -> str:
 
 
 class LongTermArchive:
-    def __init__(self, data_dir: Path, exchange: str, retention_ms: int) -> None:
+    def __init__(self, data_dir: Path, exchange: str, tier: str, retention_ms: int) -> None:
         self.base = data_dir / "longterm" / exchange
+        self.tier = tier
         self.retention_ms = retention_ms
 
     def _dir(self, symbol: str) -> Path:
-        return self.base / symbol.upper()
+        return self.base / symbol.upper() / self.tier
 
     def append(self, symbol: str, ts_ms: int, frame: bytes) -> None:
         d = self._dir(symbol)
@@ -45,11 +46,12 @@ class LongTermArchive:
         except OSError as e:  # Platte voll o. Ä.: Anzeige läuft trotzdem weiter
             log.warning("longterm archive write failed", extra={"symbol": symbol, "error": str(e)})
 
-    def load(self, symbol: str, now_ms: int, bucket_ticks: int, factor: int) -> list[bytes]:
+    def load(self, symbol: str, now_ms: int, bucket_ticks: int | None, factor: int) -> list[bytes]:
         """Frames der letzten ``retention_ms``, passend zu Bucket-Größe und Faktor,
-        zeitlich sortiert und ohne Duplikate."""
+        zeitlich sortiert und ohne Duplikate. ``bucket_ticks=None``: die Bucket-Größe des
+        neuesten Frames gilt (Orderbuch läuft gerade nicht, Größe noch unbekannt)."""
         start = now_ms - self.retention_ms
-        out: dict[int, bytes] = {}
+        objs: list[dict[str, Any]] = []
         skipped = 0
         first_day = datetime.fromtimestamp(start / 1000, UTC).date()
         last_day = datetime.fromtimestamp(now_ms / 1000, UTC).date()
@@ -60,22 +62,26 @@ class LongTermArchive:
             if not path.exists():
                 continue
             try:
-                unpacker = msgpack.Unpacker(path.open("rb"), raw=False)
-                for obj in unpacker:
-                    if not isinstance(obj, dict):
-                        continue
-                    ts = int(obj.get("ts", 0))
-                    if ts < start or ts > now_ms:
-                        continue
-                    if obj.get("bt") != bucket_ticks or obj.get("f") != factor:
-                        skipped += 1
-                        continue
-                    out[ts] = msgpack.packb(obj)
+                with path.open("rb") as fh:
+                    for obj in msgpack.Unpacker(fh, raw=False):
+                        if not isinstance(obj, dict):
+                            continue
+                        ts = int(obj.get("ts", 0))
+                        if start <= ts <= now_ms:
+                            objs.append(obj)
             except (OSError, ValueError, msgpack.UnpackException) as e:
                 # Abgeschnittener letzter Frame nach Absturz: Rest der Datei bleibt nutzbar
                 log.warning(
                     "longterm archive read problem", extra={"file": str(path), "error": str(e)}
                 )
+        if bucket_ticks is None and objs:
+            bucket_ticks = max(objs, key=lambda o: int(o.get("ts", 0))).get("bt")
+        out: dict[int, bytes] = {}
+        for obj in objs:
+            if obj.get("bt") != bucket_ticks or obj.get("f") != factor:
+                skipped += 1
+                continue
+            out[int(obj["ts"])] = msgpack.packb(obj)
         if skipped:
             log.info(
                 "longterm frames with other bucket size skipped",

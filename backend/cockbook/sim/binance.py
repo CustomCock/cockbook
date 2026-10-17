@@ -432,15 +432,18 @@ class Simulator:
             return await self.klines_1d(request)
         book = self.books[sym]
         limit = int(request.query.get("limit", "500"))
-        now_min = int(time.time() * 1000) // 60_000 * 60_000
+        iv = request.query.get("interval", "1m")
+        step = int(iv[:-1]) * {"m": 60_000, "h": 3_600_000}.get(iv[-1], 60_000)
+        vol = 0.0008 * math.sqrt(step / 60_000)
+        now_bar = int(time.time() * 1000) // step * step
         rows = []
         price = float(book.mid * book.tick)
         for i in range(limit):
-            t = now_min - i * 60_000
-            o = price * (1 + self.rng.gauss(0, 0.0008))
-            h, low = max(o, price) * 1.0004, min(o, price) * 0.9996
+            t = now_bar - i * step
+            o = price * (1 + self.rng.gauss(0, vol))
+            h, low = max(o, price) * (1 + vol / 2), min(o, price) * (1 - vol / 2)
             rows.append(
-                [t, f"{o:.6f}", f"{h:.6f}", f"{low:.6f}", f"{price:.6f}", "12.3", t + 59_999]
+                [t, f"{o:.6f}", f"{h:.6f}", f"{low:.6f}", f"{price:.6f}", "12.3", t + step - 1]
             )
             price = o
         return web.json_response(rows[::-1])

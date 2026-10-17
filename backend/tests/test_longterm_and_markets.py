@@ -21,51 +21,54 @@ from cockbook.server.bridge import Bridge
 from cockbook.server.protocol import encode_control, encode_long_column, encode_session
 from tests.test_server import free_port
 
-
-def col(base: int, values: list[float], bb: int = 1, ba: int = 2) -> HeatmapColumn:
-    return HeatmapColumn(0, True, base, array("f", values), bb, ba)
-
-
 # --- LongTermAccumulator ---------------------------------------------------------------
 
 
-def test_long_term_mean_over_time_and_buckets() -> None:
-    acc = LongTermAccumulator(2)
-    acc.add(col(10, [4.0, 0.0, 2.0, 2.0]))  # Buckets 10..13 -> grob 5, 5, 6, 6
-    acc.add(col(10, [0.0, 0.0, 6.0, 2.0], bb=7, ba=8))
-    out = acc.take(123)
+def test_tier_accumulator_mean_density_and_liquidations() -> None:
+    from cockbook.core.events import Side
+
+    acc = LongTermAccumulator(4)
+    acc.add_sample({10: 8.0, 12: 4.0}, 1, 2)
+    acc.add_sample({10: 0.0, 11: 8.0}, 3, 4)
+    acc.add_sample(None, 5, 6)  # nicht synchron -> zählt nicht
+    acc.add_liquidation(Side.ASK, 1000.0)  # Long liquidiert
+    acc.add_liquidation(Side.BID, 250.0)
+    out = acc.take(7)
     assert out.synced
-    assert out.ts_ns == 123
-    assert out.base_bucket == 5
-    # grob 5: (4 + 0 + 0 + 0) / (2 Spalten * 2 Buckets) = 1; grob 6: (2+2+6+2)/4 = 3
-    assert list(out.values[:2]) == [1.0, 3.0]
-    assert (out.best_bid, out.best_ask) == (7, 8)  # letzter BBO des Intervalls
-
-
-def test_long_term_shifted_window_and_reset() -> None:
-    acc = LongTermAccumulator(2)
-    acc.add(col(10, [2.0, 2.0]))
-    acc.add(col(12, [2.0, 2.0]))  # Preis gewandert: landet eine grobe Stufe höher
-    out = acc.take(1)
-    assert list(out.values[:2]) == [1.0, 1.0]
-    empty = acc.take(2)  # nach take ist alles zurückgesetzt
-    assert not empty.synced
-    assert len(empty.values) == 0
-
-
-def test_long_term_ignores_unsynced_columns() -> None:
-    acc = LongTermAccumulator(1)
-    acc.add(HeatmapColumn(0, False, 0, array("f"), None, None))
-    assert not acc.take(1).synced
+    # Mittel über 2 Abtastungen, als Dichte je feinem Bucket (/4)
+    assert dict(out.items()) == {10: 1.0, 11: 1.0, 12: 0.5}
+    assert (out.best_bid, out.best_ask) == (3, 4)
+    assert acc.take_liquidations() == (1000.0, 250.0)
+    assert acc.take_liquidations() == (0.0, 0.0)
+    assert not acc.take(8).synced  # zurückgesetzt
     with pytest.raises(ValueError, match="factor"):
         LongTermAccumulator(0)
 
 
-def test_long_column_and_session_frames() -> None:
-    c = msgpack.unpackb(
-        encode_long_column("BTCUSDT", HeatmapColumn(5_000_000, True, 7, array("f", [1.5]), 3, 4))
+def test_sparse_column_and_long_frames() -> None:
+    import struct
+
+    from cockbook.core.events import CandleBar
+    from cockbook.server.protocol import encode_column, encode_klines
+
+    c = HeatmapColumn(5_000_000, True, 100, array("f", [1.5, 2.0]), 3, 4, idx=array("i", [0, 7]))
+    f = msgpack.unpackb(encode_column("BTCUSDT", c)[0])
+    assert struct.unpack("<2i", f["i"]) == (0, 7)
+    assert struct.unpack("<2f", f["q"]) == (1.5, 2.0)
+    lc = msgpack.unpackb(encode_long_column("BTCUSDT", "1D", c, 5, 16, 1234.567, 8.0))
+    assert (lc["t"], lc["tier"], lc["bt"], lc["f"], lc["ts"], lc["b"]) == (
+        "lc",
+        "1D",
+        5,
+        16,
+        5,
+        100,
     )
-    assert (c["t"], c["sym"], c["ts"], c["b"], c["bb"], c["ba"]) == ("cc", "BTCUSDT", 5, 7, 3, 4)
+    assert (lc["ll"], lc["lsh"]) == (1234.57, 8.0)
+    bar = CandleBar(open_time_ns=60_000_000_000, open=Decimal(1), high=Decimal(2),
+                    low=Decimal("0.5"), close=Decimal("1.5"), volume=Decimal(10))  # fmt: skip
+    lk = msgpack.unpackb(encode_klines("BTCUSDT", "1D", "15m", [bar]))
+    assert lk["x"] == [[60_000, 1.0, 2.0, 0.5, 1.5, 10.0]]
     s = msgpack.unpackb(
         encode_session(
             MarketSession(exchange="x", symbol="COMMODITY", ts_recv_ns=2_000_000,
@@ -220,42 +223,47 @@ async def test_source_manager_on_demand(monkeypatch: pytest.MonkeyPatch) -> None
 # --- Bridge: Reihenfolge, Abo-Hook, Langzeit-Historie ---------------------------------------
 
 
-async def test_bridge_order_hook_and_long_history() -> None:
+async def test_bridge_order_hook_and_long_view() -> None:
     port = free_port()
-    bridge = Bridge(ServerConfig(port=port, history_columns=2, long_history_columns=2))
+    bridge = Bridge(ServerConfig(port=port, history_columns=2))
     subscribed: list[str] = []
     bridge.on_subscribe = subscribed.append
+    requests: list[tuple[str, str, str]] = []
+
+    async def handler(sym: str, tier: str, what: str) -> list[str | bytes]:
+        requests.append((sym, tier, what))
+        return [encode_control("long_hello", symbol=sym, tier=tier), b"\x81\xa1t\xa2lc"]
+
+    bridge.long_handler = handler
     bridge.set_symbol_order(["BTCUSDT", "XAUUSDT"])
     await bridge.start()
     try:
         bridge.register_symbol("XAUUSDT", kind="tradfi", label="Gold")
         bridge.register_symbol("BTCUSDT", kind="crypto", label="BTC")
-        bridge.set_hello("BTCUSDT", encode_control("hello", symbol="BTCUSDT"))
-        for i in range(3):
-            bridge.publish_long(
-                "BTCUSDT",
-                encode_long_column(
-                    "BTCUSDT", HeatmapColumn(i * 1_000_000, True, 0, array("f", [1.0]), 1, 2)
-                ),
-            )
         async with aiohttp.ClientSession() as s, s.ws_connect(f"http://127.0.0.1:{port}/ws") as ws:
+            first = json.loads((await ws.receive()).data)
+            assert [x["symbol"] for x in first["symbols"]] == ["BTCUSDT", "XAUUSDT"]
+            assert first["symbols"][1]["kind"] == "tradfi"
+            await ws.send_str(json.dumps({"type": "long", "symbol": "XAUUSDT", "tier": "1D"}))
             got: list[Any] = []
             async with asyncio.timeout(5):
-                while len(got) < 4:
+                while len(got) < 3:
                     msg = await ws.receive()
-                    got.append(
+                    data = (
                         json.loads(msg.data)
                         if msg.type is aiohttp.WSMsgType.TEXT
                         else msgpack.unpackb(msg.data)
                     )
-        assert [x["symbol"] for x in got[0]["symbols"]] == [
-            "BTCUSDT",
-            "XAUUSDT",
-        ]  # Config-Reihenfolge
-        assert got[0]["symbols"][1]["kind"] == "tradfi"
-        assert got[1]["type"] == "hello"
-        assert [g["ts"] for g in got[2:]] == [1, 2]  # Langzeit-Historie fasst 2
-        assert subscribed == ["BTCUSDT"]  # Standard-Abo = erstes Symbol, Hook gerufen
+                    if data.get("type") == "long_hello" or data.get("t") == "lc":
+                        got.append(data)
+                    if len(got) == 2:
+                        # neue Spalte der abonnierten Stufe kommt live; andere Stufe nicht
+                        bridge.publish_tier("XAUUSDT", "1W", b"\x81\xa1t\xa2xx")
+                        bridge.publish_tier("XAUUSDT", "1D", b"\x81\xa1t\xa2lc")
+        assert got[0]["type"] == "long_hello"
+        assert [g.get("t") for g in got[1:]] == ["lc", "lc"]
+        assert requests == [("XAUUSDT", "1D", "all")]
+        assert subscribed == ["BTCUSDT", "XAUUSDT"]  # Standard-Abo + Orderbuch für Langzeit
     finally:
         await bridge.stop()
 
@@ -263,7 +271,7 @@ async def test_bridge_order_hook_and_long_history() -> None:
 # --- Langzeit: breite Abtastung, Archiv, Klassifizierung ------------------------------------
 
 
-def test_coarse_column_samples_wide_book_as_density() -> None:
+def test_coarse_sums_are_wider_than_fine_column() -> None:
     from cockbook.core.aggregation import HeatmapAggregator
     from cockbook.core.events import BookSnapshot, BookSyncStatus, InstrumentInfo, PriceLevel
 
@@ -279,23 +287,9 @@ def test_coarse_column_samples_wide_book_as_density() -> None:
         )
     )
     agg.on_event(BookSyncStatus(**c, synced=True, reason=""))
-    fine = agg.make_column(0)
-    assert fine.base_bucket == 17  # fein: nur +-2 Buckets um den Mid
-    coarse = agg.make_coarse_column(0, 4, 100)  # grob: Bucket = 20 Ticks, weit
-    vals = {coarse.base_bucket + i: v for i, v in enumerate(coarse.values) if v}
-    # Tick 20 -> grober Bucket 1, Wert als Dichte je feinem Bucket: 40 / 4 = 10
-    assert vals == {1: 10.0, 4: 2.0, 5: 1.0}
-
-
-def test_long_term_pad_keeps_moving_columns() -> None:
-    acc = LongTermAccumulator(1, pad=100)
-    acc.add(col(1000, [4.0]))
-    acc.add(col(1050, [4.0]))  # Preis 50 Buckets weiter: früher abgeschnitten
-    out = acc.take(1)
-    assert out.base_bucket == 1000
-    assert out.values[0] == 2.0
-    assert out.values[50] == 2.0
-    assert len(out.values) == 51  # leere Ränder abgeschnitten
+    assert [b for b, _ in agg.make_column(0).items()] == [19, 20]  # fein: nur +-2 Buckets
+    # grob: Bucket = 4 feine = 20 Ticks, weit -> auch die Wall bei Tick 20 (Summe, keine Dichte)
+    assert agg.coarse_sums(4, 100) == {1: 40.0, 4: 8.0, 5: 4.0}
 
 
 def test_archive_roundtrip_skips_other_scale_and_prunes(tmp_path: Any) -> None:
@@ -303,11 +297,11 @@ def test_archive_roundtrip_skips_other_scale_and_prunes(tmp_path: Any) -> None:
 
     day = 86_400_000
     now = 20_000 * day + 5_000
-    a = LongTermArchive(tmp_path, "binance_usdm", retention_ms=2 * day)
+    a = LongTermArchive(tmp_path, "binance_usdm", "1D", retention_ms=2 * day)
 
     def mk(ts: int, bt: int) -> bytes:
         c = HeatmapColumn(ts * 1_000_000, True, 7, array("f", [1.0]), 1, 2)
-        return encode_long_column("BTCUSDT", c, bt, 4)
+        return encode_long_column("BTCUSDT", "1D", c, bt, 4)
 
     a.append("BTCUSDT", now - 3 * day, mk(now - 3 * day, 5))  # zu alt
     a.append("BTCUSDT", now - day, mk(now - day, 5))
@@ -315,11 +309,13 @@ def test_archive_roundtrip_skips_other_scale_and_prunes(tmp_path: Any) -> None:
     a.append("BTCUSDT", now - 500, mk(now - 500, 2))  # andere Bucket-Größe
     a.append("BTCUSDT", now - 1000, mk(now - 1000, 5))  # Duplikat
     # abgeschnittener Frame am Dateiende (Absturz beim Schreiben)
-    path = tmp_path / "longterm" / "binance_usdm" / "BTCUSDT"
+    path = tmp_path / "longterm" / "binance_usdm" / "BTCUSDT" / "1D"
     with sorted(path.glob("*.msgpack"))[-1].open("ab") as f:
         f.write(mk(now, 5)[:10])
     frames = a.load("BTCUSDT", now, 5, 4)
     assert [msgpack.unpackb(f)["ts"] for f in frames] == [now - day, now - 1000]
+    # Orderbuch läuft nicht (Bucket-Größe unbekannt): die des neuesten Frames gilt
+    assert [msgpack.unpackb(f)["ts"] for f in a.load("BTCUSDT", now, None, 4)] == [now - 500]
     a.prune("BTCUSDT", now)
     assert len(list(path.glob("*.msgpack"))) == 2
 
@@ -362,27 +358,59 @@ def test_classify_tradfi() -> None:
 
 async def test_bridge_since_sends_only_missing_history() -> None:
     port = free_port()
-    bridge = Bridge(ServerConfig(port=port, history_columns=10, long_history_columns=10))
+    bridge = Bridge(ServerConfig(port=port, history_columns=10))
     await bridge.start()
     try:
         bridge.register_symbol("BTCUSDT")
         bridge.set_hello("BTCUSDT", encode_control("hello", symbol="BTCUSDT"))
         for i in range(1, 4):
-            c = HeatmapColumn(i * 1_000_000, True, 0, array("f", [1.0]), 1, 2)
-            bridge.publish_long("BTCUSDT", encode_long_column("BTCUSDT", c), i)
+            bridge.publish("BTCUSDT", [msgpack.packb({"t": "col", "ts": i})], i)
         async with aiohttp.ClientSession() as s, s.ws_connect(f"http://127.0.0.1:{port}/ws") as ws:
-            await ws.send_str(
-                json.dumps({"type": "subscribe", "symbol": "BTCUSDT", "since_long": 2})
-            )
+            await ws.send_str(json.dumps({"type": "subscribe", "symbol": "BTCUSDT", "since": 2}))
             got: list[Any] = []
             async with asyncio.timeout(5):
                 while True:
                     msg = await ws.receive()
                     if msg.type is aiohttp.WSMsgType.BINARY:
                         got.append(msgpack.unpackb(msg.data)["ts"])
-                    # nach dem Resubscribe: nur noch Spalte 3
                     if got[-1:] == [3] and got.count(3) == 2:
                         break
         assert got == [1, 2, 3, 3]  # erst Standard-Abo (alles), dann nur das Fehlende
     finally:
         await bridge.stop()
+
+
+async def test_feed_long_request_serves_archive(tmp_path: Any) -> None:
+    import time
+
+    from cockbook.config import AggregationConfig, UiConfig
+    from cockbook.server.feed import MarketFeed, _interval_minutes
+    from cockbook.server.longterm_archive import LongTermArchive
+
+    agg_cfg = AggregationConfig()
+    tier = next(t for t in agg_cfg.long_tiers if t.name == "1D")
+    now_ms = time.time_ns() // 1_000_000
+    arch = LongTermArchive(tmp_path, "binance_usdm", "1D", 90_000_000)
+    for k in (3, 2, 1):
+        c = HeatmapColumn((now_ms - k * 60_000) * 1_000_000, True, 7, array("f", [1.0]), 1, 2,
+                          idx=array("i", [0]))  # fmt: skip
+        arch.append(
+            "BTCUSDT", now_ms - k * 60_000, encode_long_column("BTCUSDT", "1D", c, 5, tier.factor)
+        )
+    async with EventBus() as bus:
+        feed = MarketFeed(
+            {}, agg_cfg, UiConfig(), bus, Bridge(ServerConfig()), archive_dir=tmp_path
+        )
+        out = await feed.long_request("BTCUSDT", "1D", "all")
+        assert json.loads(out[0])["type"] == "long_hello"
+        hello = json.loads(out[0])
+        assert (hello["bucket_ticks"], hello["factor"], hello["columns"]) == (5, tier.factor, 3)
+        assert [msgpack.unpackb(f)["t"] for f in out[1:4] if isinstance(f, bytes)] == ["lc"] * 3
+        assert json.loads(out[-1])["type"] == "long_ready"
+        bad = await feed.long_request("BTCUSDT", "2Y", "all")
+        assert json.loads(bad[0])["type"] == "error"
+    assert (_interval_minutes("15m"), _interval_minutes("4h"), _interval_minutes("x")) == (
+        15,
+        240,
+        0,
+    )

@@ -83,21 +83,25 @@ kommen keine Orderbuch-Updates.
 
 Die Seitenleiste enthält alle Funktionen zum Ein-/Ausschalten (gelten für alle Coins):
 
-- **Chart:** Liquidity-Heatmap, Langzeit-Heatmap, Weich zeichnen, Trade-Bubbles, Best Bid/Ask,
-  Liquidationen, Preisgitter, Kerzen (1m/3m/5m/10m), Orderbuch (DOM), RSI-Fenster unter dem Chart
-- **Heatmap:** zeigt das ganze bekannte Orderbuch (bis ±600 Preis-Stufen um den Kurs), Liquidität
-  bleibt an ihrem Preis stehen. Wo das Buch nicht bekannt ist (weit weg vom Kurs, vor dem Start), bleibt
-  der Hintergrund leer.
-- **Langzeit-Heatmap:** die letzten 6 h als gröbere, breitere Ebene unter der Live-Heatmap (Mittel über
-  5 s, je 4 Preis-Stufen, bis ±1500 grobe Stufen). Sie wird unter `data/longterm/` gespeichert und
-  übersteht Neustarts. Sichtbar beim Herauszoomen in der Zeit (Shift+Mausrad) oder Zurückziehen; eine
-  gestrichelte Linie markiert den Übergang „Langzeit | Live“, oben rechts steht, wie weit beide
-  zurückreichen. Die Live-Heatmap hat volle Auflösung (100 ms) für die letzten ~5 min.
+- **Chart:** Liquidity-Heatmap, Weich zeichnen, Trade-Bubbles, Best Bid/Ask, Liquidationen, Preisgitter,
+  Kerzen (1m/3m/5m/10m), Orderbuch (DOM), RSI-Fenster unter dem Chart
+- **Heatmap:** zeigt alles, was das Orderbuch kennt (bis ±8000 Preis-Stufen um den Kurs); Liquidität
+  bleibt an ihrem Preis stehen. Wichtig zum Verständnis: Binance liefert per REST nur die besten 1000
+  Level je Seite – bei BTC nur etwa ±0,2–0,4 % um den Kurs. Weiter entfernte Level lernt das Buch erst,
+  wenn sich dort etwas ändert; nach einem Neu-Sync bleiben sie als „zuletzt bekannt“ stehen
+  (`memory_max_age_s`). Der bekannte Bereich wächst also mit der Zeit. Herauszoomen im Preis nutzt eine
+  zweite, gröbere Preis-Ebene (je 8 Stufen zusammengefasst).
+- **Langzeit-Heatmap** (eigener Tab, Knopf oben in der Seitenleiste): **12h · 1D · 1W · 1M** umschaltbar,
+  jede Stufe mit eigener Auflösung (30 s / 1 min / 10 min / 30 min je Spalte), dazu Kerzen
+  (5m/15m/1h/4h) und Liquidationen je Spalte. Die Seitenleiste zeigt dort ATH & Zyklen, Derivate und
+  Liquidationen. Daten sammelt das Backend, solange das Orderbuch eines Coins läuft (`always_on` =
+  immer), und speichert sie unter `data/longterm/` – sie überstehen Neustarts. Ein Coin ohne
+  gesammelte Daten zeigt zunächst nur Kerzen; die Heatmap füllt sich mit der Zeit.
 - **Orderbuch (DOM):** rechts neben der Preisachse, auf derselben Preisachse wie die Heatmap: Bid/Ask je
   Preiszeile (zurückgescrollt: zum betrachteten Zeitpunkt), gehandeltes Volumen (Kauf/Verkauf) und
   Delta im sichtbaren Zeitraum. Zeilen fassen je nach Zoom 1, 2, 5, 10 … Stufen zusammen. Klick auf die
   DOM-Kopfzeile schaltet Menge ↔ USDT um.
-- **ATH & Zyklen:** Allzeithoch, Abstand, Tage seit ATH, 52-Wochen-Spanne; Marktzyklus (Halving-Zyklen
+- **ATH & Zyklen** (im Langzeit-Tab): Allzeithoch, Abstand, Tage seit ATH, 52-Wochen-Spanne; Marktzyklus (Halving-Zyklen
   oder eigener Zeitraum) mit Länge, Fortschritt, Zyklus-Hoch/-Tief und Performance
 - **Indikatoren:** RSI(14) nach Wilder für 1m, 5m, 15m, 1h und 1D; im RSI-Fenster im Intervall der Kerzen
 - **Derivate:** Mark-/Indexpreis, Funding Rate (mit Countdown), Open Interest (Δ 5 min / 1 h),
