@@ -50,6 +50,29 @@ make lint      # ruff, mypy, tsc
 make dev       # Backend + Frontend-Dev-Server (http://127.0.0.1:5173)
 ```
 
+### Windows 11 (ohne make)
+
+Einmalig in PowerShell installieren, danach PowerShell neu öffnen:
+
+```powershell
+winget install --id Git.Git -e
+winget install --id astral-sh.uv -e
+winget install --id OpenJS.NodeJS.LTS -e
+git clone https://github.com/CustomCock/cockbook.git
+```
+
+Starten: im Ordner `cockbook` **Doppelklick auf `start.bat`**. Das Skript installiert/aktualisiert
+die Abhängigkeiten, öffnet Backend und Oberfläche in je einem Fenster und dann den Browser
+(http://127.0.0.1:5173). Beenden: beide Fenster schließen. Update: `git pull`, dann wieder `start.bat`.
+
+Bitunix-Konto (optional): Keys nicht in eine Datei schreiben, sondern in PowerShell setzen und von dort
+starten – die Fenster erben sie:
+
+```powershell
+cd cockbook
+$env:BITUNIX_API_KEY="…"; $env:BITUNIX_API_SECRET="…"; .\start.ps1
+```
+
 ### Heatmap
 
 ```bash
