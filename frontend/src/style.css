@@ -1158,3 +1158,54 @@ button:hover {
   padding: 4px 12px;
   font-size: 12.5px;
 }
+
+/* --- Token-Abfrage (Server-Betrieb) ------------------------------------------------------ */
+
+#token-prompt {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  background: rgba(20, 21, 23, 0.85);
+}
+
+#token-prompt form {
+  width: min(420px, calc(100vw - 32px));
+  padding: 22px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+}
+
+#token-prompt h2 {
+  margin: 0 0 8px;
+  font-size: 16px;
+}
+
+#token-prompt p {
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+#token-prompt input {
+  width: 100%;
+  margin: 8px 0;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+}
+
+#token-prompt button {
+  width: 100%;
+  padding: 8px;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: rgba(185, 156, 255, 0.18);
+  color: var(--fg);
+  font: inherit;
+  cursor: pointer;
+}

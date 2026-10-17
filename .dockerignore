@@ -1,0 +1,13 @@
+# Nur Quelltext ins Docker-Image – keine Aufzeichnungen, Secrets oder Build-Reste
+.git
+data/
+**/data/
+.env
+deploy/.env
+**/node_modules
+**/.venv
+**/__pycache__
+**/.mypy_cache
+**/.pytest_cache
+**/.ruff_cache
+frontend/dist

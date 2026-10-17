@@ -93,6 +93,8 @@ export interface Handlers {
   onStat(f: StatFrame): void;
   /** Langzeit-Ansicht: Steuer-Nachrichten und Frames */
   onLong(m: LongMessage): void;
+  /** Server lehnt ab (Token fehlt/falsch): nicht automatisch neu verbinden */
+  onAuthError(): void;
   onConnection(connected: boolean): void;
 }
 
@@ -149,10 +151,16 @@ export interface Connection {
   longOpen(symbol: string, tier: string): void;
   longKlines(symbol: string, tier: string): void;
   longOff(): void;
+  /** Sofort neu verbinden (z. B. nachdem ein Token eingegeben wurde) */
+  reconnect(): void;
   close(): void;
 }
 
-export function connect(url: string, h: Handlers, initialSymbol: () => string | null): Connection {
+/** Close-Code des Backends bei fehlendem/falschem Token */
+export const AUTH_CLOSE_CODE = 4401;
+
+/** `url` wird bei jedem Verbindungsaufbau neu gelesen (Token kann sich ändern). */
+export function connect(url: () => string, h: Handlers, initialSymbol: () => string | null): Connection {
   let ws: WebSocket | null = null;
   let closed = false;
   let delay = 500;
@@ -164,7 +172,7 @@ export function connect(url: string, h: Handlers, initialSymbol: () => string | 
   };
 
   const open = () => {
-    ws = new WebSocket(url);
+    ws = new WebSocket(url());
     ws.binaryType = "arraybuffer";
     ws.onopen = () => {
       delay = 500;
@@ -187,9 +195,13 @@ export function connect(url: string, h: Handlers, initialSymbol: () => string | 
         else h.onStat(f);
       }
     };
-    ws.onclose = () => {
+    ws.onclose = (ev: CloseEvent) => {
       h.onConnection(false);
       if (closed) return;
+      if (ev.code === AUTH_CLOSE_CODE) {
+        h.onAuthError();
+        return;
+      }
       setTimeout(open, delay);
       delay = Math.min(delay * 2, 10_000);
     };
@@ -209,6 +221,10 @@ export function connect(url: string, h: Handlers, initialSymbol: () => string | 
     longOff: () => {
       longSub = null;
       send({ type: "long_off" });
+    },
+    reconnect: () => {
+      if (ws && ws.readyState !== WebSocket.CLOSED) ws.close();
+      else open();
     },
     close: () => {
       closed = true;

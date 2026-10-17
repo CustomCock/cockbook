@@ -1,0 +1,24 @@
+# Caddy: HTTPS (Let's Encrypt, automatisch), Frontend ausliefern, /ws ans Backend.
+# COCKBOOK_DOMAIN kommt aus deploy/.env, z. B. meincockbook.duckdns.org
+{$COCKBOOK_DOMAIN} {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		# Seite darf nur mit sich selbst sprechen (auch der WebSocket)
+		Content-Security-Policy "default-src 'self'; connect-src 'self' wss://{$COCKBOOK_DOMAIN}; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'"
+	}
+
+	# Backend ist nur im internen Docker-Netz erreichbar – von außen nur über diesen Pfad
+	handle /ws {
+		reverse_proxy backend:8765
+	}
+
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
+}

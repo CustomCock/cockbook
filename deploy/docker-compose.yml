@@ -1,0 +1,48 @@
+# CockBook auf einem Server: cd deploy && cp .env.example .env && (Werte eintragen)
+# und dann: docker compose up -d --build
+name: cockbook
+
+services:
+  backend:
+    build:
+      context: ..
+      dockerfile: deploy/backend.Dockerfile
+    restart: unless-stopped
+    environment:
+      COCKBOOK_TOKEN: ${COCKBOOK_TOKEN:?COCKBOOK_TOKEN fehlt in deploy/.env}
+    volumes:
+      - ../config.yaml:/app/config.yaml:ro
+      # Langzeit-Heatmap & Kerzen-Cache: Docker-Volume (übersteht Updates und Neustarts)
+      - cockbook_data:/app/data
+    # Kein "ports:" – das Backend ist absichtlich nicht direkt von außen erreichbar
+    expose:
+      - "8765"
+    # Schutz für kleine VMs (1 GB): lieber Neustart als den ganzen Server lahmlegen
+    mem_limit: ${COCKBOOK_MEM_LIMIT:-700m}
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  web:
+    build:
+      context: ..
+      dockerfile: deploy/web.Dockerfile
+    restart: unless-stopped
+    depends_on: [backend]
+    environment:
+      COCKBOOK_DOMAIN: ${COCKBOOK_DOMAIN:?COCKBOOK_DOMAIN fehlt in deploy/.env}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+volumes:
+  cockbook_data:
+  caddy_data:
+  caddy_config:

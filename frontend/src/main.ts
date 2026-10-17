@@ -2,6 +2,7 @@ import "./style.css";
 import { AXIS_H, AXIS_W, drawPriceAxis, drawTimeAxis, formatPrice, gridStepTicks, timeLabel, type Instrument } from "./axes";
 import { aggregate, buildCandles, CandleSeries, RRectBuilder, type CandleMinutes } from "./candles";
 import { computeRange, type ScaleRange, type ScaleSettings } from "./colorscale";
+import { showTokenPrompt, takeTokenFromHash, wsUrlWithToken } from "./backend";
 import { CoinPicker } from "./coinpicker";
 import { CYCLE_PRESETS } from "./cycles";
 import { buildDomRows, DOM_W, drawDom } from "./dom";
@@ -27,7 +28,7 @@ import { baseSymbol, isLongTab, LONG_SUFFIX, TabBar, TabModel } from "./tabs";
 import { downsample, HeatmapStore, rowsFor, type TradeBin } from "./store";
 import { panY, priceUnit, recenter, visibleCols, xToCol, yToUnit, zoomX, zoomY, type View } from "./viewport";
 
-const WS_URL = (import.meta.env.VITE_COCKBOOK_WS as string | undefined) ?? "ws://127.0.0.1:8765/ws";
+takeTokenFromHash();
 const SETTINGS_KEY = "cockbook.settings.v1";
 const SYMBOL_KEY = "cockbook.symbol.v1";
 const CANDLE_KEY = "cockbook.candles.v1";
@@ -412,7 +413,7 @@ function selectSymbol(sym: string): void {
 // --- Daten -------------------------------------------------------------------------------
 
 const conn = connect(
-  WS_URL,
+  wsUrlWithToken,
   {
     onConnection(ok) {
       if (!ok) setBadge("sync", "keine Verbindung", "off");
@@ -487,6 +488,10 @@ const conn = connect(
     onLong(m) {
       longView.onMessage(m);
     },
+    onAuthError() {
+      setBadge("sync", "Token nötig", "off");
+      showTokenPrompt(() => conn.reconnect());
+    },
     onChart(f) {
       if (f.sym !== currentSymbol) return;
       if (f.t === "kh" || f.t === "k") {
@@ -547,6 +552,11 @@ const longView = new LongView($<HTMLElement>("longchart"), markets, conn, scaleS
   sidebar.setMode("long", t);
 });
 longView.hide();
+
+// Token-Link geöffnet, während die Seite schon offen ist (nur der #-Teil ändert sich)
+window.addEventListener("hashchange", () => {
+  if (takeTokenFromHash()) conn.reconnect();
+});
 
 // --- Farbskala (alle 500 ms aus dem sichtbaren Bereich) -----------------------------------
 

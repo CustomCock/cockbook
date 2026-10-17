@@ -21,10 +21,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hmac
 import json
 import logging
 from collections import deque
 from collections.abc import Awaitable, Callable
+from urllib.parse import urlsplit
 
 from aiohttp import WSMsgType, web
 
@@ -80,8 +82,11 @@ class _Client:
 
 
 class Bridge:
-    def __init__(self, cfg: ServerConfig) -> None:
+    def __init__(self, cfg: ServerConfig, *, token: str | None = None) -> None:
+        """``token``: Server-Betrieb (nicht nur localhost) – jeder Client muss ihn als
+        ``?token=…`` mitschicken. Kommt aus einer Umgebungsvariable, nie aus Dateien."""
         self.cfg = cfg
+        self._token = token
         self._clients: set[_Client] = set()
         self._channels: dict[str, _Channel] = {}
         self._symbol_info: dict[str, dict[str, str]] = {}
@@ -213,9 +218,27 @@ class Bridge:
 
     # --- Server -------------------------------------------------------------------------
 
+    def _authorized(self, request: web.Request) -> bool:
+        """Server-Betrieb: Token prüfen (zeitkonstanter Vergleich, sonst verrät die
+        Antwortzeit, wie viele Zeichen schon stimmen) und nur Seiten derselben Adresse
+        zulassen – eine fremde Webseite im selben Browser soll sich nicht verbinden können."""
+        if self._token is None:
+            return True
+        given = request.query.get("token", "")
+        if not hmac.compare_digest(given.encode(), self._token.encode()):
+            return False
+        origin = request.headers.get("Origin")
+        return origin is None or urlsplit(origin).netloc == request.host
+
     async def _handle(self, request: web.Request) -> web.WebSocketResponse:
         ws = web.WebSocketResponse(heartbeat=20, max_msg_size=1 << 20)
         await ws.prepare(request)
+        if not self._authorized(request):
+            # Eigener Close-Code, damit das Frontend nach dem Token fragen kann
+            log.warning("frontend rejected (token/origin)", extra={"peer": request.remote})
+            await ws.send_str(encode_control("auth_error"))
+            await ws.close(code=4401, message=b"unauthorized")
+            return ws
         maxsize = (
             self.cfg.client_queue_frames
             + self.cfg.history_columns * 4

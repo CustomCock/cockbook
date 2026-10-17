@@ -118,6 +118,20 @@ Ohne GPU (z. B. in einer VM) rendert der Browser per Software. CockBook erkennt 
 zeichnet die Heatmap dann intern mit halber Auflösung (Anzeige oben rechts: „Software-GL“).
 Override per URL: `?scale=1`.
 
+### Auf einem Server betreiben (kostenlos)
+
+CockBook kann komplett auf einer Gratis-VM laufen (Oracle Cloud „Always Free“), erreichbar per
+HTTPS von überall, geschützt mit einem Zugangs-Token, rund um die Uhr sammelnd:
+
+```bash
+git clone https://github.com/CustomCock/cockbook.git
+cd cockbook/deploy && cp .env.example .env    # Adresse + Token eintragen
+docker compose up -d --build
+```
+
+Schritt-für-Schritt-Anleitung (Konto, VM, Ports, kostenlose Adresse, Start):
+[`deploy/README.md`](deploy/README.md).
+
 ### Orderbuch & Aufzeichnung
 
 ```bash

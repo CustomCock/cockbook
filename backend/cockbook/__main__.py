@@ -3,6 +3,10 @@
 Startet Datenquellen (Orderbücher bei Bedarf) -> EventBus -> Heatmap-Aggregation
 -> WebSocket-Bridge.
 Das Frontend (``make dev-frontend``) verbindet sich auf ``ws://127.0.0.1:8765/ws``.
+
+Server-Betrieb (Docker auf einer VM, siehe deploy/): ``COCKBOOK_PUBLIC=1`` lauscht auf
+allen Schnittstellen *im Container* – nur zusammen mit ``COCKBOOK_TOKEN`` (mind. 24 Zeichen),
+sonst startet das Backend nicht. Nach außen erreichbar ist es nur über Caddy (HTTPS).
 """
 
 from __future__ import annotations
@@ -24,10 +28,29 @@ from cockbook.server.feed import MarketFeed
 log = logging.getLogger("cockbook")
 
 
-async def run(cfg: AppConfig, symbol: str | None) -> None:
+MIN_TOKEN_LEN = 24
+
+
+def server_mode(cfg: AppConfig) -> tuple[AppConfig, str | None]:
+    """Umgebungsvariablen für den Server-Betrieb auswerten. Gibt (Config, Token) zurück."""
+    if os.environ.get("COCKBOOK_PUBLIC", "") not in ("1", "true", "yes"):
+        return cfg, None
+    token = os.environ.get("COCKBOOK_TOKEN", "")
+    if len(token) < MIN_TOKEN_LEN:
+        raise SystemExit(
+            f"COCKBOOK_PUBLIC=1 braucht COCKBOOK_TOKEN mit mindestens {MIN_TOKEN_LEN} Zeichen "
+            "(z. B. erzeugen mit: openssl rand -hex 24)"
+        )
+    # bewusst an der Validierung vorbei: Loopback-Pflicht gilt nur ohne Token
+    server = cfg.server.model_copy(update={"host": "0.0.0.0"})
+    log.info("server mode: listening on all interfaces, token required")
+    return cfg.model_copy(update={"server": server}), token
+
+
+async def run(cfg: AppConfig, symbol: str | None, token: str | None = None) -> None:
     stop = asyncio.Event()
     install_stop_signals(stop)
-    bridge = Bridge(cfg.server)
+    bridge = Bridge(cfg.server, token=token)
     await bridge.start()
     try:
         async with EventBus() as bus:
@@ -57,7 +80,8 @@ def main() -> None:
     cfg = load_config(args.config)
     setup_logging(cfg.logging)
     with contextlib.suppress(KeyboardInterrupt):
-        asyncio.run(run(cfg, args.symbol))
+        cfg, token = server_mode(cfg)
+        asyncio.run(run(cfg, args.symbol, token))
     log.info("backend stopped")
 
 

@@ -87,3 +87,49 @@ async def test_new_hello_clears_history() -> None:
     bridge.publish("BTCUSDT", encode_column("BTCUSDT", column(1)))
     bridge.set_hello("BTCUSDT", "b")
     assert len(bridge._channels["BTCUSDT"].history) == 0
+
+
+async def test_bridge_token_and_origin() -> None:
+    port = free_port()
+    bridge = Bridge(ServerConfig(port=port), token="x" * 24)
+    await bridge.start()
+    url = f"http://127.0.0.1:{port}/ws"
+    try:
+        async with aiohttp.ClientSession() as s:
+            # ohne / mit falschem Token: auth_error + Close 4401
+            for q in ("", "?token=falsch"):
+                async with s.ws_connect(url + q) as ws:
+                    assert json.loads((await ws.receive()).data)["type"] == "auth_error"
+                    assert (await ws.receive()).type is aiohttp.WSMsgType.CLOSE
+                    assert ws.close_code == 4401
+            # richtiges Token, aber fremde Seite (Origin) -> abgelehnt
+            async with s.ws_connect(
+                url + "?token=" + "x" * 24, origin="https://evil.example"
+            ) as ws:
+                assert json.loads((await ws.receive()).data)["type"] == "auth_error"
+            # richtiges Token, gleiche Adresse -> Symbol-Liste kommt
+            async with s.ws_connect(
+                url + "?token=" + "x" * 24, origin=f"http://127.0.0.1:{port}"
+            ) as ws:
+                assert json.loads((await ws.receive()).data)["type"] == "symbols"
+    finally:
+        await bridge.stop()
+
+
+def test_server_mode_requires_long_token(monkeypatch: Any) -> None:
+    import pytest
+
+    from cockbook.__main__ import server_mode
+    from cockbook.config import AppConfig
+
+    cfg = AppConfig()
+    monkeypatch.delenv("COCKBOOK_PUBLIC", raising=False)
+    assert server_mode(cfg) == (cfg, None)
+    monkeypatch.setenv("COCKBOOK_PUBLIC", "1")
+    monkeypatch.setenv("COCKBOOK_TOKEN", "kurz")
+    with pytest.raises(SystemExit, match="mindestens"):
+        server_mode(cfg)
+    monkeypatch.setenv("COCKBOOK_TOKEN", "a" * 32)
+    cfg2, token = server_mode(cfg)
+    assert cfg2.server.host == "0.0.0.0"
+    assert token == "a" * 32
