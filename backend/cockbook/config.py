@@ -286,6 +286,9 @@ class LiveConfig(_Model):
     max_state_age_s: Annotated[float, Field(ge=5)] = 90.0
     # Auslöser für TP/SL: MARK_PRICE (robust gegen einzelne Ausreißer-Trades) oder LAST_PRICE
     tpsl_trigger: Literal["MARK_PRICE", "LAST_PRICE"] = "MARK_PRICE"
+    # Mindest-Orderwert in USDT für positionserhöhende Orders. Nicht in der Doku, gemessen:
+    # Bitunix lehnt darunter mit code 30016 "amount should be larger than 100 USD" ab.
+    min_order_usd: Annotated[Decimal, Field(ge=0)] = Decimal(100)
     reconnect: ReconnectConfig = Field(default_factory=ReconnectConfig)
 
 

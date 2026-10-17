@@ -444,6 +444,7 @@ export class TradePanel {
       this.toast("error", "Menge in der Ordermaske eintragen");
       return;
     }
+    if (this.belowMinimum(qty, price)) return;
     const p = roundTick(price, ctx.tick);
     this.send("order", {
       symbol: ctx.symbol,
@@ -495,6 +496,20 @@ export class TradePanel {
     if (!this.ctx) return false;
     if (this.saved.mode === "live") return venueOf(this.ctx.symbol) === "bitunix" && this.live.canTrade;
     return venueOf(this.ctx.symbol) !== "multi" && !!this.state;
+  }
+
+  /** Bitunix-Mindestwert je Order (nur live, nicht für Reduce-Only). */
+  private minOrderUsd(): number {
+    return this.saved.mode === "live" && !this.reduce.checked ? (this.live.state?.min_order_usd ?? 0) : 0;
+  }
+
+  private belowMinimum(qty: number, price: number): boolean {
+    const min = this.minOrderUsd();
+    if (min > 0 && qty * price < min) {
+      this.toast("error", `Orderwert ${usd(qty * price)} – Bitunix verlangt mindestens ${usd(min)} je Order`);
+      return true;
+    }
+    return false;
   }
 
   /** Freie Margin des gewählten Kontos (für die %-Knöpfe). */
@@ -612,6 +627,7 @@ export class TradePanel {
       this.toast("error", `Menge zu klein (min. ${c.step} ${coinOf(c.symbol).replace(/USDT$/, "")})`);
       return;
     }
+    if (this.belowMinimum(qty, ref ?? (c.bid + c.ask) / 2)) return;
     const payload: Record<string, unknown> = { symbol: c.symbol, side, kind, qty: String(qty), reduce_only: this.reduce.checked };
     if (kind === "limit") payload.price = String(ref);
     if (kind === "stop") payload.trigger = String(ref);
@@ -684,10 +700,17 @@ export class TradePanel {
     if (c && ref !== null && qty > 0) {
       const notional = qty * ref;
       const fee = notional * (this.saved.kind === "limit" ? 0.0002 : venue === "bitunix" ? 0.0006 : 0.0005);
+      const min = this.minOrderUsd();
       this.summary.textContent =
         `${qty.toLocaleString("de-DE", { maximumFractionDigits: 6 })} ${coin} · Wert ${usd(notional)} · ` +
-        `Margin ${usd(notional / lev)} · Gebühr ≈ ${usd(fee)}`;
-    } else this.summary.textContent = c ? `min. ${c.step} ${coin}` : "";
+        `Margin ${usd(notional / lev)} · Gebühr ≈ ${usd(fee)}` +
+        (min > 0 && notional < min ? ` · zu klein: Bitunix verlangt min. ${usd(min)}` : "");
+      this.summary.classList.toggle("trade-too-small", min > 0 && notional < min);
+    } else {
+      const min = this.minOrderUsd();
+      this.summary.textContent = c ? `min. ${c.step} ${coin}${min > 0 ? ` und min. ${usd(min)} Wert` : ""}` : "";
+      this.summary.classList.remove("trade-too-small");
+    }
     // TP/SL-Info (für einen Kauf gerechnet; bei Verkauf umgekehrt)
     const tp = this.num(this.tp);
     const sl = this.num(this.sl);

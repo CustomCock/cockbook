@@ -188,11 +188,31 @@ class BitunixTradeRest(BitunixPrivateRest):
     geklappt hat – maßgeblich ist der WebSocket-Push. Der Dienst gleicht danach ab.
     """
 
+    def __init__(self, cred: Credentials, rest_url: str, session: aiohttp.ClientSession) -> None:
+        super().__init__(cred, rest_url, session)
+        self._pairs: dict[str, tuple[float, dict[str, Any] | None]] = {}
+
     async def leverage_margin_mode(self, symbol: str) -> dict[str, Any]:
         # https://www.bitunix.com/api-docs/futures/account/get_leverage_and_margin_mode.html
         data = await self.get("/api/v1/futures/account/get_leverage_margin_mode",
                               {"symbol": symbol, "marginCoin": "USDT"})  # fmt: skip
         return dict(data or {})
+
+    async def pair_info(self, symbol: str) -> dict[str, Any] | None:
+        """Öffentliche Handelspaar-Daten (Mindestmenge, Max. je Order, Status, API erlaubt).
+        Kurz zwischengespeichert. https://www.bitunix.com/api-docs/futures/market/get_trading_pairs.html"""
+        hit = self._pairs.get(symbol)
+        if hit is not None and time.monotonic() - hit[0] < 600:
+            return hit[1]
+        url = f"{self.rest_url}/api/v1/futures/market/trading_pairs"
+        try:
+            async with self.session.get(url, params={"symbols": symbol}) as r:
+                rows = _parse("/market/trading_pairs", r.status, await r.text())
+        except (aiohttp.ClientError, TimeoutError, BitunixApiError):
+            return hit[1] if hit else None  # nur Vorabprüfung – Bitunix prüft ohnehin selbst
+        info = next((dict(x) for x in rows or [] if x.get("symbol") == symbol), None)
+        self._pairs[symbol] = (time.monotonic(), info)
+        return info
 
     async def trading_settings(self, symbol: str) -> dict[str, Any] | None:
         """Hebel/Margin-Modus des Coins; ``None`` = für diesen Coin noch nie eingestellt.

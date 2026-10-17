@@ -1737,3 +1737,7 @@ button:hover {
   outline: 2px solid #e8c547;
   outline-offset: 1px;
 }
+
+.trade-summary.trade-too-small {
+  color: var(--down);
+}

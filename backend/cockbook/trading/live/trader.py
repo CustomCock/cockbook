@@ -39,6 +39,14 @@ log = logging.getLogger(__name__)
 _RISK_REDUCING = {"cancel", "cancel_all", "close", "close_all"}
 
 
+# Bitunix-Fehlercodes, die wir gesehen haben, in verständlich (Rohtext bleibt dahinter stehen)
+_KNOWN_CODES = {
+    10002: "Parameter von Bitunix abgelehnt",
+    10003: "Key ungültig",
+    30016: "Orderwert zu klein (min. 100 USD)",
+}
+
+
 class LiveRejectedError(Exception):
     """Anfrage wird nicht an die Börse geschickt; Text geht an den Nutzer."""
 
@@ -103,7 +111,8 @@ class LiveTrader:
         except LiveRejectedError as e:
             text, ok = str(e), False
         except BitunixApiError as e:
-            text, ok = f"Bitunix: {e}", False
+            hint = _KNOWN_CODES.get(e.code or 0)
+            text, ok = (f"Bitunix: {hint} ({e})" if hint else f"Bitunix: {e}"), False
         self._log(op, msg, ok, text)
         return {"type": "live_result", "req": req, "ok": ok, "message": text, "data": data}
 
@@ -209,6 +218,35 @@ class LiveTrader:
         mark = pos.get("mark") if pos else None
         return Decimal(str(mark)) if mark else None
 
+    async def _check_size(
+        self, sym: str, kind: str, qty: Decimal, price: Decimal | None, reduce_only: bool
+    ) -> None:
+        """Grenzen der Börse vorab prüfen – klare Meldung statt Bitunix-Fehlercode."""
+        info = await self.rest.pair_info(sym)
+        if info is not None:
+            if info.get("symbolStatus") not in (None, "OPEN"):
+                raise LiveRejectedError(f"{sym} ist bei Bitunix gerade nicht handelbar "
+                                        f"({info.get('symbolStatus')})")  # fmt: skip
+            if info.get("isApiSupported") is False:
+                raise LiveRejectedError(f"{sym} kann bei Bitunix nicht per API gehandelt werden")
+            min_qty = Decimal(str(info.get("minTradeVolume") or 0))
+            if not reduce_only and qty < min_qty:
+                raise LiveRejectedError(
+                    f"Menge zu klein: Bitunix verlangt min. {_s(min_qty)} {sym}"
+                )
+            limit_key = "maxLimitOrderVolume" if kind == "limit" else "maxMarketOrderVolume"
+            max_qty = Decimal(str(info.get(limit_key) or 0))
+            if max_qty > 0 and qty > max_qty:
+                raise LiveRejectedError(
+                    f"Menge zu groß: max. {_s(max_qty)} je {kind.capitalize()}-Order"
+                )
+        min_usd = self.cfg.min_order_usd
+        if not reduce_only and price is not None and qty * price < min_usd:
+            raise LiveRejectedError(
+                f"Orderwert {qty * price:.2f} USDT – Bitunix verlangt mindestens "
+                f"{min_usd:.0f} USDT je Order"
+            )
+
     async def _prepare_symbol(self, key: str, sym: str, want_lev: int | None) -> int:
         """Vor einer positionserhöhenden Order: isolierte Margin und gewünschten Hebel
         sicherstellen. Gibt den Hebel zurück, mit dem die Order läuft."""
@@ -278,6 +316,7 @@ class LiveTrader:
             if sl is not None and (sl >= ref if long else sl <= ref):
                 raise LiveRejectedError("Stop-Loss liegt auf der falschen Seite des Einstiegs")
         reduce_only = bool(msg.get("reduce_only"))
+        await self._check_size(sym, kind, qty, price or ref, reduce_only)
         if not reduce_only:
             want = msg.get("leverage")
             await self._prepare_symbol(key, sym, want if isinstance(want, int) else None)

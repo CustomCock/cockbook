@@ -36,10 +36,16 @@ class Fake:
         self.leverage = 20
         # False: Coin nie eingestellt -> trading_settings leer, alter Endpunkt 10002
         self.configured = True
+        # Handelspaar-Daten (Doku-Beispiel, gekürzt)
+        self.pair: dict[str, Any] = {"symbol": "BTCUSDT", "minTradeVolume": "0.0001",
+                                     "maxLimitOrderVolume": "1200", "maxMarketOrderVolume": "120",
+                                     "symbolStatus": "OPEN", "isApiSupported": True}  # fmt: skip
         self.new_endpoint = True
 
     def app(self) -> web.Application:
         async def handler(req: web.Request) -> web.Response:
+            if req.path.endswith("market/trading_pairs"):  # öffentlich, ohne Signatur
+                return web.json_response({"code": 0, "msg": "Success", "data": [self.pair]})
             h = req.headers
             body = await req.text()
             query = sort_params(dict(req.rel_url.query))
@@ -71,7 +77,7 @@ class Fake:
         return app
 
     def paths(self) -> list[str]:
-        return [p.rsplit("/api/v1/futures/", 1)[-1] for p, _ in self.calls]
+        return [p.rsplit("/api/v1/futures/", 1)[-1] for p, _ in self.calls]  # ohne Marktdaten
 
 
 STATE: dict[str, Any] = {
@@ -302,3 +308,39 @@ async def test_mask_leverage_is_applied_if_different(env: tuple[Fake, Any]) -> N
         req("order", symbol=KEY, side="buy", kind="market", qty="0.001", leverage=150)
     )
     assert not r["ok"]
+
+
+async def test_exchange_limits_checked_before_sending(env: tuple[Fake, Any]) -> None:
+    """Beim Nutzer: Bitunix lehnte mit code 30016 ab (Orderwert < 100 USD)."""
+    fake, make = env
+    t = make()
+    r = await t.handle(
+        req("order", symbol=KEY, side="buy", kind="limit", qty="0.0001", price="80000")
+    )
+    assert not r["ok"]
+    assert "mindestens 100 USDT" in r["message"]
+    r = await t.handle(req("order", symbol=KEY, side="buy", kind="market", qty="121", ref="80000"))
+    assert "zu groß" in r["message"]
+    fake.pair["minTradeVolume"] = "0.01"
+    t = make()  # neue Instanz: Handelspaar-Daten sind 10 min zwischengespeichert
+    r = await t.handle(
+        req("order", symbol=KEY, side="buy", kind="limit", qty="0.005", price="80000")
+    )
+    assert "min. 0.01" in r["message"]
+    fake.pair["symbolStatus"] = "CANCEL_ONLY"
+    t = make()
+    r = await t.handle(req("order", symbol=KEY, side="buy", kind="limit", qty="1", price="80000"))
+    assert "nicht handelbar" in r["message"]
+    assert "trade/place_order" not in fake.paths()
+    # Reduce-Only (Verkleinern) unterliegt nicht dem Mindestwert
+    fake.pair["symbolStatus"] = "OPEN"
+    t = make()
+    r = await t.handle(req("order", symbol=KEY, side="sell", kind="limit", qty="0.0001",
+                           price="90000", reduce_only=True))  # fmt: skip
+    assert r["ok"], r["message"]
+
+
+async def test_known_error_codes_are_explained(env: tuple[Fake, Any]) -> None:
+    from cockbook.trading.live.trader import _KNOWN_CODES
+
+    assert "100 USD" in _KNOWN_CODES[30016]

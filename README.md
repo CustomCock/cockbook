@@ -176,7 +176,9 @@ Stop-Einstiegsorders). **Achtung: echtes Geld.** Sicherungen:
 - Neue Positionen nur mit frischem Kontostand (`max_state_age_s`); **Schließen, Löschen und Kill-Switch
   gehen immer.** Kill-Switch: erst alle Orders löschen, dann alle Positionen schließen.
 - Jede Anfrage steht im Order-Log `data/live/orders.jsonl` (ohne Keys).
-- Erste Schritte mit Mini-Mengen weit weg vom Kurs, danach erst normal.
+- Bitunix verlangt **mindestens 100 USDT Orderwert** (nicht in der Doku, gemessen) und je Coin eine
+  Mindestmenge – CockBook prüft beides vorab und zeigt es in der Ordermaske an.
+- Erste Schritte mit kleinen Mengen (knapp über 100 USDT Wert) und Limit-Orders weit weg vom Kurs.
 
 1. Bei Bitunix (API-Verwaltung) einen eigenen API-Key für CockBook anlegen: **nur Futures-Trading,
    kein Abheben, kein Transfer**, IP-Whitelist = deine IP.

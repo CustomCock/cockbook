@@ -189,3 +189,4 @@ trading:
     trading_enabled: false      # true = echte Orders erlaubt (zusätzlich im Browser freischalten)
     max_state_age_s: 90         # neue Positionen nur mit frischem Kontostand
     tpsl_trigger: MARK_PRICE    # oder LAST_PRICE
+    min_order_usd: 100          # Bitunix-Mindestwert je Order (gemessen, code 30016)

@@ -141,6 +141,8 @@ export interface LiveState {
   read_only: boolean;
   max_leverage: number;
   tpsl_trigger?: string;
+  /** Bitunix-Mindestwert je Order (USDT) */
+  min_order_usd?: number;
   account?: { available: number; frozen: number; margin: number; upnl: number; equity: number; transfer: number | null; bonus: number | null; position_mode: string | null };
   positions?: {
     symbol: string;

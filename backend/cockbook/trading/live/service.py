@@ -189,6 +189,7 @@ class LiveAccountService:
             "updated": self.updated_ms,
             "read_only": not self.cfg.trading_enabled,
             "tpsl_trigger": self.cfg.tpsl_trigger,
+            "min_order_usd": float(self.cfg.min_order_usd),
             "max_leverage": self.cfg.max_leverage,
         }
         if self.state is not None:
