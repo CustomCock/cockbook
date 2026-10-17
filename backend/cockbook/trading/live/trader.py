@@ -136,7 +136,9 @@ class LiveTrader:
             raise LiveRejectedError("Symbol fehlt")
         if op == "settings":
             assert sym is not None
-            s = await self.rest.leverage_margin_mode(sym)
+            s = await self.rest.trading_settings(sym)
+            if s is None:  # noch nie eingestellt: wird vor der ersten Order gesetzt
+                return "", {"symbol": key, "leverage": None, "margin_mode": None}
             return "", {"symbol": key, "leverage": s.get("leverage"),
                         "margin_mode": s.get("marginMode")}  # fmt: skip
         if op == "order":
@@ -207,22 +209,35 @@ class LiveTrader:
         mark = pos.get("mark") if pos else None
         return Decimal(str(mark)) if mark else None
 
-    async def _ensure_isolated(self, key: str, sym: str) -> int:
-        """Isolierte Margin sicherstellen; gibt den eingestellten Hebel zurück."""
-        s = await self.rest.leverage_margin_mode(sym)
-        lev = int(s.get("leverage") or 0)
-        if s.get("marginMode") != "ISOLATION":
-            st = self.state() or {}
-            busy = any(p["symbol"] == key for p in st.get("positions", [])) or any(
-                o["symbol"] == key for o in st.get("orders", [])
-            )
-            if busy:
+    async def _prepare_symbol(self, key: str, sym: str, want_lev: int | None) -> int:
+        """Vor einer positionserhöhenden Order: isolierte Margin und gewünschten Hebel
+        sicherstellen. Gibt den Hebel zurück, mit dem die Order läuft."""
+        if want_lev is not None and not 1 <= want_lev <= self.cfg.max_leverage:
+            raise LiveRejectedError(f"Hebel 1–{self.cfg.max_leverage}")
+        s = await self.rest.trading_settings(sym)
+        st = self.state() or {}
+        busy = any(p["symbol"] == key for p in st.get("positions", [])) or any(
+            o["symbol"] == key for o in st.get("orders", [])
+        )
+        mode = s.get("marginMode") if s else None
+        if mode != "ISOLATION":
+            if busy and mode is not None:
                 raise LiveRejectedError(
-                    f"{sym} steht auf {s.get('marginMode')} – mit offener Position/Order nicht "
-                    "umstellbar. In Bitunix auf isoliert stellen."
+                    f"{sym} steht auf {mode} – mit offener Position/Order nicht umstellbar. "
+                    "In Bitunix auf isoliert stellen."
                 )
             await self.rest.change_margin_mode(sym, "ISOLATION")
             log.info("bitunix margin mode set to isolation", extra={"symbol": sym})
+        lev = int(s.get("leverage") or 0) if s else 0
+        if want_lev is not None and want_lev != lev:
+            # Hebel aus der Ordermaske – sonst handelte man mit einem Hebel, den man nicht sieht
+            await self.rest.change_leverage(sym, want_lev)
+            log.info("bitunix leverage set", extra={"symbol": sym, "leverage": want_lev})
+            lev = want_lev
+        if lev == 0:
+            raise LiveRejectedError(
+                "Hebel für diesen Coin unbekannt – in der Maske einen Hebel wählen"
+            )
         if lev > self.cfg.max_leverage:
             raise LiveRejectedError(
                 f"Hebel bei Bitunix steht auf {lev}x, erlaubt sind max. {self.cfg.max_leverage}x"
@@ -264,7 +279,8 @@ class LiveTrader:
                 raise LiveRejectedError("Stop-Loss liegt auf der falschen Seite des Einstiegs")
         reduce_only = bool(msg.get("reduce_only"))
         if not reduce_only:
-            await self._ensure_isolated(key, sym)
+            want = msg.get("leverage")
+            await self._prepare_symbol(key, sym, want if isinstance(want, int) else None)
         body: dict[str, Any] = {
             "symbol": sym,
             "side": "BUY" if side == "buy" else "SELL",

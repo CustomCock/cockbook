@@ -34,6 +34,9 @@ class Fake:
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.margin_mode = "ISOLATION"
         self.leverage = 20
+        # False: Coin nie eingestellt -> trading_settings leer, alter Endpunkt 10002
+        self.configured = True
+        self.new_endpoint = True
 
     def app(self) -> web.Application:
         async def handler(req: web.Request) -> web.Response:
@@ -45,9 +48,18 @@ class Fake:
             payload = json.loads(body) if body else dict(req.rel_url.query)
             self.calls.append((req.path, payload))
             data: Any = {}
-            if req.path.endswith("get_leverage_margin_mode"):
-                data = {"symbol": "BTCUSDT", "marginCoin": "USDT", "leverage": self.leverage,
-                        "marginMode": self.margin_mode}  # fmt: skip
+            setting = {"symbol": "BTCUSDT", "marginCoin": "USDT", "leverage": self.leverage,
+                       "marginMode": self.margin_mode}  # fmt: skip
+            if req.path.endswith("trading_settings"):
+                if not self.new_endpoint:
+                    return web.json_response({"code": 404, "msg": "Not Found"})
+                data = [setting] if self.configured else []
+            elif req.path.endswith("get_leverage_margin_mode"):
+                if not self.configured:  # gemessen beim Nutzer: so antwortet Bitunix
+                    return web.json_response({"code": 10002, "msg": "Parameter error"})
+                data = setting
+            elif req.path.endswith("change_leverage"):
+                self.leverage = int(payload["leverage"])
             elif req.path.endswith("place_order"):
                 data = {"orderId": "777", "clientId": payload.get("clientId")}
             elif req.path.endswith("cancel_orders"):
@@ -125,7 +137,7 @@ async def test_limit_order_is_rounded_and_carries_tpsl(
     r = await make().handle(req("order", symbol=KEY, side="buy", kind="limit", qty="0.012345",
                                 price="80000.04", tp="82000", sl="79500"))  # fmt: skip
     assert r["ok"], r["message"]
-    assert fake.paths() == ["account/get_leverage_margin_mode", "trade/place_order"]
+    assert fake.paths() == ["account/trading_settings", "trade/place_order"]
     body = fake.calls[-1][1]
     assert body["symbol"] == "BTCUSDT"
     assert body["side"] == "BUY"
@@ -152,7 +164,7 @@ async def test_cross_margin_is_switched_or_blocked(env: tuple[Fake, Any]) -> Non
         req("order", symbol=eth, side="sell", kind="market", qty="0.01", ref="81000")
     )
     assert r["ok"], r["message"]
-    assert fake.paths() == ["account/get_leverage_margin_mode", "account/change_margin_mode",
+    assert fake.paths() == ["account/trading_settings", "account/change_margin_mode",
                             "trade/place_order"]  # fmt: skip
     assert fake.calls[1][1]["marginMode"] == "ISOLATION"
     # mit offener Position -> nicht umstellbar -> keine Order
@@ -160,7 +172,7 @@ async def test_cross_margin_is_switched_or_blocked(env: tuple[Fake, Any]) -> Non
     r = await make().handle(req("order", symbol=KEY, side="buy", kind="market", qty="0.01"))
     assert not r["ok"]
     assert "isoliert" in r["message"]
-    assert fake.paths() == ["account/get_leverage_margin_mode"]
+    assert fake.paths() == ["account/trading_settings"]
 
 
 async def test_leverage_above_limit_blocks(env: tuple[Fake, Any]) -> None:
@@ -248,3 +260,45 @@ async def test_settings_are_read_without_trading_enabled(env: tuple[Fake, Any]) 
     r = await make(enabled=False).handle(req("settings", symbol=KEY))
     assert r["ok"]
     assert r["data"] == {"symbol": KEY, "leverage": 20, "margin_mode": "ISOLATION"}
+
+
+async def test_unconfigured_symbol_gets_isolated_and_mask_leverage(env: tuple[Fake, Any]) -> None:
+    """Fehler beim Nutzer: Coin nie eingestellt -> alter Endpunkt "Parameter error" (10002).
+    Statt abzubrechen: isoliert + Hebel aus der Maske setzen, dann Order."""
+    fake, make = env
+    fake.configured = False
+    fake.new_endpoint = False  # nur der alte Endpunkt -> 10002
+    t = make(state={"positions": [], "orders": []})
+    r = await t.handle(
+        req("order", symbol=KEY, side="buy", kind="market", qty="0.001", leverage=25)
+    )
+    assert r["ok"], r["message"]
+    assert fake.paths() == [
+        "account/trading_settings",
+        "account/get_leverage_margin_mode",
+        "account/change_margin_mode",
+        "account/change_leverage",
+        "trade/place_order",
+    ]
+    assert fake.calls[3][1]["leverage"] == 25
+    s = await t.handle(req("settings", symbol=KEY))
+    assert s["ok"]
+    assert s["data"]["leverage"] is None  # noch nie eingestellt
+
+
+async def test_mask_leverage_is_applied_if_different(env: tuple[Fake, Any]) -> None:
+    fake, make = env
+    t = make(state={"positions": [], "orders": []})
+    await t.handle(req("order", symbol=KEY, side="buy", kind="market", qty="0.001", leverage=20))
+    assert "account/change_leverage" not in fake.paths()  # schon 20x
+    fake.calls.clear()
+    await t.handle(req("order", symbol=KEY, side="buy", kind="market", qty="0.001", leverage=50))
+    assert fake.paths() == [
+        "account/trading_settings",
+        "account/change_leverage",
+        "trade/place_order",
+    ]
+    r = await t.handle(
+        req("order", symbol=KEY, side="buy", kind="market", qty="0.001", leverage=150)
+    )
+    assert not r["ok"]

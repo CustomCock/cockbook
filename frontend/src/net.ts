@@ -123,7 +123,8 @@ export interface LiveResult {
   req: number | null;
   ok: boolean;
   message: string;
-  data: { symbol?: string; leverage?: number; margin_mode?: string };
+  /** settings: `leverage`/`margin_mode` null = Coin bei Bitunix noch nie eingestellt */
+  data: { symbol?: string; leverage?: number | null; margin_mode?: string | null };
 }
 
 /** Echtes Börsenkonto (Stufe 1: nur lesen). */

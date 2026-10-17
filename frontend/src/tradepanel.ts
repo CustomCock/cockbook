@@ -84,7 +84,7 @@ export class TradePanel {
   private badge: HTMLElement;
   private modeBtns = new Map<"paper" | "live", HTMLButtonElement>();
   /** Hebel/Margin-Modus des aktuellen Coins bei Bitunix (Abfrage "settings") */
-  private liveSettings: { symbol: string; leverage: number; margin_mode: string } | null = null;
+  private liveSettings: { symbol: string; leverage: number | null; margin_mode: string | null } | null = null;
   private liveUnlocked = false;
   /** nur im Paper-Modus sichtbar */
   private paperEls: HTMLElement[] = [];
@@ -314,10 +314,11 @@ export class TradePanel {
     const what = m.req !== null ? this.pending.get(m.req) : undefined;
     if (m.req !== null) this.pending.delete(m.req);
     if (what === "settings") {
-      if (m.ok && m.data.symbol && m.data.leverage !== undefined) {
-        this.liveSettings = { symbol: m.data.symbol, leverage: m.data.leverage, margin_mode: m.data.margin_mode ?? "" };
+      if (m.ok && m.data.symbol) {
+        // null = Coin bei Bitunix noch nie eingestellt (wird vor der ersten Order gesetzt)
+        this.liveSettings = { symbol: m.data.symbol, leverage: m.data.leverage ?? null, margin_mode: m.data.margin_mode ?? null };
         this.refresh();
-      }
+      } else if (!m.ok) this.toast("error", m.message);
       return;
     }
     this.toast(m.ok ? "ok" : "error", m.message || `${what ?? "Aktion"} fehlgeschlagen`);
@@ -450,6 +451,7 @@ export class TradePanel {
       kind,
       qty: String(qty),
       ...(kind === "stop" ? { trigger: String(p) } : { price: String(p) }),
+      ...(this.saved.mode === "live" ? { leverage: this.leverage() } : {}),
     });
   }
 
@@ -573,7 +575,9 @@ export class TradePanel {
   private leverage(): number {
     const sym = this.ctx?.symbol;
     if (this.saved.mode === "live") {
-      if (this.liveSettings && this.liveSettings.symbol === sym) return this.liveSettings.leverage;
+      if (this.liveSettings && this.liveSettings.symbol === sym && this.liveSettings.leverage) return this.liveSettings.leverage;
+      const chosen = Number(this.lev.value);
+      if (chosen > 0 && this.liveSettings?.symbol === sym) return chosen; // noch nicht eingestellt: Auswahl gilt
       return this.live.state?.positions?.find((p) => p.symbol === sym)?.leverage ?? 10;
     }
     const s = this.state;
@@ -613,6 +617,8 @@ export class TradePanel {
     if (kind === "stop") payload.trigger = String(ref);
     // Market: Referenzpreis für die TP/SL-Prüfung im Backend
     if (kind === "market") payload.ref = String(roundTick((c.bid + c.ask) / 2, c.tick));
+    // Live: mit genau dem Hebel handeln, der in der Maske steht
+    if (this.saved.mode === "live") payload.leverage = this.leverage();
     const tp = this.num(this.tp);
     const sl = this.num(this.sl);
     if (tp !== null) payload.tp = String(tp);
@@ -650,9 +656,12 @@ export class TradePanel {
       b.disabled = !ok;
       b.classList.toggle("live-order", live);
     }
-    if (live && this.liveSettings && this.liveSettings.symbol === c?.symbol && this.liveSettings.margin_mode !== "ISOLATION") {
+    const ls2 = this.liveSettings;
+    if (live && ok && ls2 && ls2.symbol === c?.symbol && ls2.margin_mode !== "ISOLATION") {
       this.disabledNote.hidden = false;
-      this.disabledNote.textContent = `Achtung: ${coin} steht bei Bitunix auf ${this.liveSettings.margin_mode} – vor der ersten Order wird auf isoliert umgestellt.`;
+      this.disabledNote.textContent = ls2.margin_mode
+        ? `Achtung: ${coin} steht bei Bitunix auf ${ls2.margin_mode} – vor der ersten Order wird auf isoliert umgestellt.`
+        : `${coin} ist bei Bitunix noch nicht eingestellt – vor der ersten Order werden isolierte Margin und der gewählte Hebel gesetzt.`;
     }
     // Hebel-Auswahl
     const max = live ? (ls?.max_leverage ?? 100) : (s?.account.max_leverage ?? 50);

@@ -194,6 +194,29 @@ class BitunixTradeRest(BitunixPrivateRest):
                               {"symbol": symbol, "marginCoin": "USDT"})  # fmt: skip
         return dict(data or {})
 
+    async def trading_settings(self, symbol: str) -> dict[str, Any] | None:
+        """Hebel/Margin-Modus des Coins; ``None`` = für diesen Coin noch nie eingestellt.
+
+        Erst der neuere Endpunkt (liefert nur *konfigurierte* Coins), sonst der ältere.
+        Der ältere antwortet für nie eingestellte Coins mit ``Parameter error`` (10002)
+        statt mit Standardwerten – das ist kein Fehler, sondern "unbekannt".
+        https://www.bitunix.com/api-docs/futures/account/get_trading_settings.html
+        """
+        try:
+            rows = await self.get("/api/v1/futures/account/trading_settings", {"symbols": symbol})
+        except BitunixApiError:
+            try:
+                data = await self.leverage_margin_mode(symbol)
+            except BitunixApiError as e:
+                if e.code == 10002:
+                    return None
+                raise
+            return data or None
+        for r in rows or []:
+            if str(r.get("symbol", "")).upper() == symbol.upper():
+                return dict(r)
+        return None
+
     async def change_margin_mode(self, symbol: str, mode: str) -> None:
         # https://www.bitunix.com/api-docs/futures/account/change_margin_mode.html
         # (nur ohne offene Position und Orders möglich)
