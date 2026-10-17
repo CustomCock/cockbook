@@ -6,9 +6,10 @@
  * Zustand, den das Backend nicht hat – wichtig, sobald dahinter echtes Geld liegt.
  */
 
-import type { Connection, PaperMessage, PaperState } from "./net";
+import { LivePanel, liveLines } from "./livepanel";
+import type { Connection, LiveState, PaperMessage, PaperState } from "./net";
 import type { Markets } from "./markets";
-import { bracketInfo, qtyForPercent, qtyFromInput, roundTick, type OrderKind, type OrderSide } from "./paper";
+import { bracketInfo, qtyForPercent, qtyFromInput, roundTick, tradeLines, type OrderKind, type OrderSide, type TradeLine } from "./paper";
 import { coinOf, VENUE_LABEL, venueOf } from "./venue";
 
 const KEY = "cockbook.trade.v1";
@@ -28,6 +29,8 @@ interface Saved {
   unit: "coin" | "usdt";
   amount: string;
   clickTrading: boolean;
+  /** Paper-Konto oder echtes Börsenkonto */
+  mode: "paper" | "live";
 }
 
 const el = <K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string): HTMLElementTagNameMap[K] => {
@@ -44,7 +47,7 @@ const cls = (v: number) => (v > 0 ? "up" : v < 0 ? "down" : "");
 export class TradePanel {
   readonly root: HTMLElement;
   state: PaperState | null = null;
-  private saved: Saved = { open: true, kind: "limit", unit: "usdt", amount: "1000", clickTrading: false };
+  private saved: Saved = { open: true, kind: "limit", unit: "usdt", amount: "1000", clickTrading: false, mode: "paper" };
   private ctx: MarketCtx | null = null;
   private dec = 2;
   private pending = new Map<number, string>();
@@ -73,6 +76,11 @@ export class TradePanel {
   private otherBox: HTMLElement;
   private historyBox: HTMLElement;
   private toasts: HTMLElement;
+  private live: LivePanel;
+  private badge: HTMLElement;
+  private modeBtns = new Map<"paper" | "live", HTMLButtonElement>();
+  /** nur im Paper-Modus sichtbar */
+  private paperEls: HTMLElement[] = [];
 
   constructor(
     root: HTMLElement,
@@ -91,7 +99,17 @@ export class TradePanel {
     root.classList.add("trade");
 
     const head = el("div", "trade-head");
-    head.append(el("span", "badge paper", "PAPER"), el("span", "trade-h", "Handel"));
+    this.badge = el("span", "badge paper", "PAPER");
+    head.append(this.badge, el("span", "trade-h", "Handel"));
+    const modes = el("div", "seg trade-modes");
+    for (const [m, label] of [["paper", "Paper"], ["live", "Bitunix (echt)"]] as const) {
+      const b = el("button", "", label);
+      b.type = "button";
+      b.addEventListener("click", () => this.setMode(m));
+      this.modeBtns.set(m, b);
+      modes.append(b);
+    }
+    this.live = new LivePanel(markets, onSelectSymbol);
     const reset = el("button", "trade-link", "Konto zurücksetzen");
     reset.type = "button";
     reset.addEventListener("click", () => {
@@ -216,8 +234,10 @@ export class TradePanel {
       if (confirm("Alle Positionen schließen und alle Orders löschen?")) this.send("close_all");
     });
     this.toasts = el("div", "trade-toasts");
-    root.append(head, this.acct, mask, this.posBox, this.ordersBox, this.otherBox, this.historyBox, kill, this.toasts);
+    root.append(head, modes, this.acct, mask, this.posBox, this.ordersBox, this.otherBox, this.historyBox, kill, this.live.root, this.toasts);
+    this.paperEls = [reset, this.acct, mask, this.posBox, this.ordersBox, this.otherBox, this.historyBox, kill];
     this.setKind(this.saved.kind);
+    this.setMode(this.saved.mode, false); // false: main hält das Panel hier noch nicht
     root.hidden = !this.saved.open;
   }
 
@@ -235,7 +255,34 @@ export class TradePanel {
   }
 
   get clickTrading(): boolean {
-    return this.saved.clickTrading && this.tradable();
+    return this.saved.mode === "paper" && this.saved.clickTrading && this.tradable();
+  }
+
+  get mode(): "paper" | "live" {
+    return this.saved.mode;
+  }
+
+  /** Linien für den Chart – aus dem gerade gewählten Konto. */
+  lines(symbol: string): TradeLine[] {
+    if (this.saved.mode === "live") return liveLines(symbol, this.live.state);
+    return this.state ? tradeLines(symbol, this.state.positions, this.state.orders) : [];
+  }
+
+  onLive(m: LiveState): void {
+    this.live.state = m;
+    if (this.saved.mode === "live") this.live.render(this.ctx?.symbol ?? null, this.dec);
+  }
+
+  private setMode(m: "paper" | "live", notify = true): void {
+    this.saved.mode = m;
+    this.save();
+    for (const [k, b] of this.modeBtns) b.classList.toggle("on", k === m);
+    for (const e of this.paperEls) e.hidden = m !== "paper";
+    this.live.root.hidden = m !== "live";
+    this.badge.textContent = m === "paper" ? "PAPER" : "LIVE";
+    this.badge.className = `badge ${m === "paper" ? "paper" : "live-real"}`;
+    if (m === "live") this.live.render(this.ctx?.symbol ?? null, this.dec);
+    if (notify) this.onOpenChange(); // Chart-Linien des anderen Kontos zeichnen
   }
 
   /** Aktueller Markt (Symbol, Raster, BBO) – bei jedem Tick aus main. */
@@ -249,6 +296,7 @@ export class TradePanel {
       this.tp.value = "";
       this.sl.value = "";
       this.renderState();
+      if (this.saved.mode === "live") this.live.render(ctx?.symbol ?? null, this.dec);
     }
     this.refresh();
   }

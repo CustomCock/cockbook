@@ -1649,3 +1649,62 @@ button:hover {
 .trade-toast.error {
   background: #45282d;
 }
+
+/* --- Echtes Konto ------------------------------------------------------------------------ */
+
+.trade-modes {
+  display: flex;
+  margin-bottom: 8px;
+}
+
+.trade-modes button {
+  flex: 1;
+}
+
+.badge.live-real {
+  background: rgba(255, 115, 133, 0.22);
+  color: var(--down);
+}
+
+.live-banner {
+  margin-bottom: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: rgba(255, 115, 133, 0.14);
+  color: var(--down);
+  font-weight: 600;
+  font-size: 11px;
+}
+
+.live-status {
+  margin-bottom: 8px;
+}
+
+.live-key {
+  color: var(--muted);
+}
+
+.live-help {
+  padding: 8px;
+  border-radius: 6px;
+  background: var(--panel-2);
+  line-height: 1.6;
+}
+
+.live-help code {
+  color: var(--accent);
+}
+
+.trade-card.other {
+  opacity: 0.75;
+  cursor: pointer;
+}
+
+.live .trade-card {
+  margin-bottom: 6px;
+}
+
+/* hidden muss gegen display: grid/flex der Panel-Elemente gewinnen */
+#trade [hidden] {
+  display: none !important;
+}

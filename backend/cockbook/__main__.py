@@ -24,6 +24,8 @@ from cockbook.core.eventbus import EventBus
 from cockbook.log import setup_logging
 from cockbook.server.bridge import Bridge
 from cockbook.server.feed import MarketFeed
+from cockbook.trading.live.bitunix_client import Credentials
+from cockbook.trading.live.service import LiveAccountService
 from cockbook.trading.paper.service import PaperService
 
 log = logging.getLogger("cockbook")
@@ -68,11 +70,14 @@ async def run(cfg: AppConfig, symbol: str | None, token: str | None = None) -> N
             )
             if paper is not None:
                 bridge.paper_handler = paper.handle
+            # Echtes Konto (Stufe 1: nur lesen) – Keys nur aus der Umgebung
+            live = LiveAccountService(cfg.trading.live, feed.aggs, bridge, Credentials.from_env())
             async with asyncio.TaskGroup() as tg:
                 tg.create_task(feed.run(stop))
                 tg.create_task(manager.run(stop))
                 if paper is not None:
                     tg.create_task(paper.run(stop))
+                tg.create_task(live.run(stop))
     finally:
         await bridge.stop()
 

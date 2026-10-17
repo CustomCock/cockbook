@@ -263,8 +263,28 @@ class PaperConfig(_Model):
     publish_interval_ms: Annotated[int, Field(ge=50)] = 250
 
 
+class LiveConfig(_Model):
+    """Echtes Trading über die Börsen-API (zurzeit Bitunix).
+
+    Keys kommen ausschließlich aus den Umgebungsvariablen ``BITUNIX_API_KEY`` und
+    ``BITUNIX_API_SECRET`` – nie aus dieser Datei. Ohne Keys bleibt der Live-Teil aus.
+    Stufe 1: nur lesen (Konto, Positionen, Orders); Orders folgen in Stufe 2.
+    Doku: https://www.bitunix.com/api-docs/futures/common/introduction.html
+    """
+
+    enabled: bool = True
+    rest_url: str = "https://fapi.bitunix.com"
+    ws_url: str = "wss://fapi.bitunix.com/private/"
+    # Sicherheitsnetz: so oft wird zusätzlich zu den WebSocket-Pushes per REST abgeglichen
+    refresh_s: Annotated[float, Field(ge=5)] = 30.0
+    ping_interval_s: Annotated[float, Field(ge=1)] = 20.0
+    max_leverage: Annotated[int, Field(ge=1, le=125)] = 100
+    reconnect: ReconnectConfig = Field(default_factory=ReconnectConfig)
+
+
 class TradingConfig(_Model):
     paper: PaperConfig = Field(default_factory=PaperConfig)
+    live: LiveConfig = Field(default_factory=LiveConfig)
 
 
 class AppConfig(_Model):

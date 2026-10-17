@@ -172,10 +172,17 @@ trading:
     enabled: true
     start_balance: 10000        # USDT
     default_leverage: 10
-    max_leverage: 50
-    max_position_usd: 250000    # größte erlaubte Position (Nominalwert)
+    max_leverage: 100
+    max_position_usd: 100000000 # größte erlaubte Position (Nominalwert) – praktisch aus
     daily_loss_limit_usd: 0     # z. B. 500: danach keine neuen Positionen bis 00:00 UTC (0 = aus)
     maintenance_margin: 0.005   # für den Liquidationspreis (isolierte Margin)
     fees:                       # Anteil: 0.0005 = 0,05 % – eigene Gebührenstufe eintragen
       binance_usdm: {maker: 0.0002, taker: 0.0005}
       bitunix: {maker: 0.0002, taker: 0.0006}
+  live:                         # echtes Bitunix-Konto (Stufe 1: nur lesen)
+    enabled: true               # wirkt nur mit BITUNIX_API_KEY + BITUNIX_API_SECRET in der Umgebung
+    rest_url: https://fapi.bitunix.com
+    ws_url: wss://fapi.bitunix.com/private/
+    refresh_s: 30               # zusätzlicher REST-Abgleich (Sicherheitsnetz zu den Pushes)
+    ping_interval_s: 20
+    max_leverage: 100

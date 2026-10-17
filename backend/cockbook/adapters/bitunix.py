@@ -298,7 +298,7 @@ def _session() -> aiohttp.ClientSession:
     return aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), trust_env=True)
 
 
-async def _ping_loop(get_ws: Any, stop: asyncio.Event, interval_s: float) -> None:
+async def ping_loop(get_ws: Any, stop: asyncio.Event, interval_s: float) -> None:
     """JSON-Ping laut Doku; ein Ping je Intervall bleibt weit unter 5 Nachrichten/s."""
     while not await sleep_or_stop(stop, interval_s):
         ws = get_ws()
@@ -357,7 +357,7 @@ class BitunixAdapter:
             log.info("bitunix adapter starting", extra={"symbol": self.symbol})
             async with asyncio.TaskGroup() as tg:
                 tg.create_task(self._candle_history(session))
-                tg.create_task(_ping_loop(lambda: self._ws, self._stop, self.cfg.ping_interval_s))
+                tg.create_task(ping_loop(lambda: self._ws, self._stop, self.cfg.ping_interval_s))
                 tg.create_task(
                     run_ws(
                         session,
@@ -503,7 +503,7 @@ class BitunixMarketStats:
             await ws.send_str(json.dumps({"op": "subscribe", "args": args}))
 
         async with asyncio.TaskGroup() as tg:
-            tg.create_task(_ping_loop(lambda: holder["ws"], self._stop, self.cfg.ping_interval_s))
+            tg.create_task(ping_loop(lambda: holder["ws"], self._stop, self.cfg.ping_interval_s))
             tg.create_task(
                 run_ws(
                     session,

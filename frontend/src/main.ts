@@ -28,7 +28,7 @@ import { Sidebar, type CycleChoice } from "./sidebar";
 import { baseSymbol, isLongTab, LONG_SUFFIX, TabBar, TabModel } from "./tabs";
 import { downsample, HeatmapStore, rowsFor, type TradeBin } from "./store";
 import { coinOf, keyFor, venueOf } from "./venue";
-import { clickOrder, tradeLines, type TradeLine } from "./paper";
+import { clickOrder, type TradeLine } from "./paper";
 import { TradeOverlay } from "./tradeoverlay";
 import { TradePanel, type MarketCtx } from "./tradepanel";
 import { panY, priceUnit, recenter, unitToY, visibleCols, xToCol, yToUnit, zoomX, zoomY, type View } from "./viewport";
@@ -467,6 +467,10 @@ function selectSymbol(sym: string): void {
 const conn = connect(
   wsUrlWithToken,
   {
+    onLive(m) {
+      tradePanel.onLive(m);
+      tradeVersion++;
+    },
     onPaper(m) {
       tradePanel.onMessage(m);
       tradeVersion++;
@@ -939,14 +943,13 @@ function render(): void {
     }
   }
   drawPriceAxis(yAxisCanvas, dpr, store, view, inst, ph);
-  const ps = tradePanel.state;
-  if (inst && ps && currentSymbol) {
+  if (inst && currentSymbol && tradePanel.open) {
     const i = inst;
     tradeOverlay.draw(
       dpr,
       pw,
       ph,
-      tradeLines(currentSymbol, ps.positions, ps.orders),
+      tradePanel.lines(currentSymbol),
       (price) => unitToY(price / i.tickSize / i.bucketTicks, view, ph),
       (price) => formatPrice(Math.round(price / i.tickSize), i),
     );

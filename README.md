@@ -140,6 +140,24 @@ echten Orderbücher von Binance bzw. Bitunix – kein Konto, keine API-Keys nöt
   „Alles schließen“ als Kill-Switch. Konto und Verlauf (CSV-Export) liegen in `data/paper/` und
   überstehen Neustarts.
 
+**Echtes Bitunix-Konto** (im Handels-Panel oben „Bitunix (echt)“) – **Stufe 1: nur lesen.** Zeigt
+Konto, Positionen (mit Linien im Chart), offene Orders und TP/SL deines Bitunix-Futures-Kontos.
+Orders senden folgt in Stufe 2.
+
+1. Bei Bitunix (API-Verwaltung) einen eigenen API-Key für CockBook anlegen: **nur Futures-Trading,
+   kein Abheben, kein Transfer**, IP-Whitelist = deine IP.
+2. Key und Secret **nur als Umgebungsvariablen** setzen – im Terminal, in dem du das Backend startest:
+
+   ```bash
+   export BITUNIX_API_KEY="…"        # Windows PowerShell: $env:BITUNIX_API_KEY="…"
+   export BITUNIX_API_SECRET="…"     #                     $env:BITUNIX_API_SECRET="…"
+   make dev
+   ```
+
+   Nie in eine Datei im Repo schreiben. CockBook loggt sie nicht und schickt sie nicht an den
+   Browser (dort steht nur `Key …1234`).
+3. CockBook erwartet **One-Way-Modus** und **isolierte Margin** und warnt, wenn das Konto anders steht.
+
 Bedienung: Mausrad = Preis-Zoom, Shift+Mausrad (oder Mausrad über der Zeitachse) = Zeit-Zoom,
 Ziehen = verschieben (auch zurück in der Zeit), Doppelklick oder `C` = zurück zu Live mit
 Auto-Zentrierung, `F` = Preisbereich an die sichtbaren Kerzen anpassen, `/` = Coin suchen, `Alt+1…9` / `Alt+←→` = Tabs, `Alt+W` = Tab schließen. Regler „Kontrast“ und „Schwelle“ steuern die Farbskala; Einstellungen werden

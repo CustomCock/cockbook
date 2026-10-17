@@ -112,6 +112,44 @@ export interface Handlers {
   onConnection(connected: boolean): void;
   /** Paper-Trading: Zustand, Antwort auf eine Anfrage, Hinweis (z. B. TP ausgeführt) */
   onPaper?(m: PaperMessage): void;
+  /** Echtes Börsenkonto */
+  onLive?(m: LiveState): void;
+}
+
+/** Echtes Börsenkonto (Stufe 1: nur lesen). */
+export interface LiveState {
+  type: "live_state";
+  exchange: string;
+  /** no_keys | off | connecting | ok | error */
+  status: string;
+  message: string;
+  ws: boolean;
+  key: string | null;
+  updated: number;
+  read_only: boolean;
+  max_leverage: number;
+  account?: { available: number; frozen: number; margin: number; upnl: number; equity: number; transfer: number | null; bonus: number | null; position_mode: string | null };
+  positions?: {
+    symbol: string;
+    position_id: string;
+    qty: number;
+    entry: number | null;
+    mark: number | null;
+    upnl: number;
+    roe: number;
+    realized: number;
+    fee: number;
+    funding: number;
+    leverage: number;
+    margin: number;
+    margin_mode: string | null;
+    liq: number | null;
+    tp: number | null;
+    sl: number | null;
+    opened: number;
+  }[];
+  orders?: { id: string; symbol: string; side: "buy" | "sell"; kind: string; qty: number; filled: number; price: number | null; reduce_only: boolean; tp: number | null; sl: number | null; status: string; created: number }[];
+  warnings?: string[];
 }
 
 export type PaperMessage =
@@ -280,6 +318,7 @@ export function connect(url: () => string, h: Handlers, initialSymbol: () => str
         else if (msg.type === "symbols") h.onSymbols(msg as Symbols);
         else if (msg.type === "long_hello" || msg.type === "long_ready") h.onLong(msg as LongMessage);
         else if (msg.type.startsWith("paper_")) h.onPaper?.(msg as PaperMessage);
+        else if (msg.type === "live_state") h.onLive?.(msg as LiveState);
       } else {
         const f = decode(new Uint8Array(ev.data as ArrayBuffer)) as BinaryFrame | Extract<LongMessage, { t: string }>;
         if (f.t === "lc" || f.t === "lk") h.onLong(f);
