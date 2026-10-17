@@ -6,6 +6,7 @@
 import type { DailyRow } from "./cycles";
 import type { Category, StatFrame, SymbolInfo } from "./net";
 import { lastRsi } from "./rsi";
+import { coinOf, keyFor, legsOf, venueOf } from "./venue";
 
 export interface Liq {
   sym: string;
@@ -27,7 +28,7 @@ export interface MarketState {
   tv?: Extract<StatFrame, { t: "tv" }>;
   /** Open-Interest-Verlauf (für Veränderung über Zeitfenster) */
   oiHist: { ts: number; oi: number }[];
-  /** Tageskerzen (Spot) für ATH, Zyklen, YTD */
+  /** Tageskerzen (Spot) für ATH, Zyklen, YTD – nur Binance-Keys, siehe `Markets.daily` */
   daily?: DailyRow[];
   sync?: Extract<StatFrame, { t: "sync" }>;
   kind: "crypto" | "tradfi";
@@ -149,9 +150,31 @@ export class Markets {
     return market ? (this.sessions.get(market) ?? null) : null;
   }
 
+  /**
+   * Key, dessen Kennzahlen für `symbol` gelten: Das kombinierte Buch hat keine eigenen
+   * (Ticker, Funding …) – dort zählt Binance als Referenz.
+   */
+  private ref(symbol: string): MarketState | undefined {
+    return this.bySymbol.get(venueOf(symbol) === "multi" ? keyFor("binance", coinOf(symbol)) : symbol);
+  }
+
+  /** Tageskerzen (ATH, Zyklen, RSI 1D): Historie gibt es nur von Binance – der Coin ist derselbe. */
+  daily(symbol: string): DailyRow[] | undefined {
+    return this.bySymbol.get(symbol)?.daily ?? this.bySymbol.get(keyFor("binance", coinOf(symbol)))?.daily;
+  }
+
+  /** Orderbuch-Status; kombiniert = synchron nur, wenn alle Börsen synchron sind. */
+  sync(symbol: string): Extract<StatFrame, { t: "sync" }> | undefined {
+    const legs = legsOf(symbol).map((k) => this.bySymbol.get(k)?.sync);
+    if (legs.length === 1) return legs[0];
+    if (legs.some((s) => !s)) return undefined;
+    const bad = legs.find((s) => !s!.synced);
+    return { ...(bad ?? legs[0]!), sym: symbol, resyncs: legs.reduce((n, s) => n + s!.resyncs, 0) };
+  }
+
   /** Letzter Preis: Ticker, sonst Mark-Preis. */
   price(symbol: string): number | null {
-    const m = this.bySymbol.get(symbol);
+    const m = this.ref(symbol);
     return m?.ticker?.last ?? m?.mark?.mp ?? null;
   }
 
@@ -161,7 +184,7 @@ export class Markets {
    * frühere Kerzen bis dahin praktisch vergessen (Gewicht (13/14)^300 ≈ 2e-10).
    */
   rsi1d(symbol: string, now = Date.now()): number | null {
-    const d = this.bySymbol.get(symbol)?.daily;
+    const d = this.daily(symbol);
     if (!d || d.length < 2) return null;
     const closes = d.slice(-300).map((r) => r[4]);
     const price = this.price(symbol);
@@ -171,7 +194,7 @@ export class Markets {
 
   /** Veränderung 24h in Prozent. */
   change24h(symbol: string): number | null {
-    const t = this.bySymbol.get(symbol)?.ticker;
+    const t = this.ref(symbol)?.ticker;
     return t && t.open ? ((t.last - t.open) / t.open) * 100 : null;
   }
 

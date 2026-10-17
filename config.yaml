@@ -116,6 +116,7 @@ exchanges:
     rest_url: https://fapi.bitunix.com
     ws_url: wss://fapi.bitunix.com/public/
     ping_interval_s: 20         # Bitunix erlaubt max. 5 Nachrichten/s vom Client
+    candle_history_bars: 1000   # 1m-Kerzen beim Öffnen eines Coins (REST, je 200)
     reconnect:
       initial_backoff_s: 1
       max_backoff_s: 60

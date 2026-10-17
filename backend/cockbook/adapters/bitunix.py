@@ -7,6 +7,8 @@ Doku (gelesen am 2026-10-17):
 - Trades: https://www.bitunix.com/api-docs/futures/websocket/public/Trade%20Channel.html
 - Tickers: https://www.bitunix.com/api-docs/futures/websocket/public/Tickers%20Channel.html
 - Handelspaare: https://www.bitunix.com/api-docs/futures/market/get_trading_pairs.html
+- Kerzen: https://www.bitunix.com/api-docs/futures/market/get_kline.html
+  (max. 200 je Abfrage, 10 Abfragen/s, nur abgeschlossene Kerzen, neueste zuerst)
 
 Orderbuch-Prozedur
 ------------------
@@ -41,6 +43,9 @@ from cockbook.core.events import (
     BookDelta,
     BookSnapshot,
     BookSyncStatus,
+    Candle,
+    CandleBar,
+    CandleHistory,
     Event,
     InstrumentInfo,
     PriceLevel,
@@ -56,6 +61,10 @@ EXCHANGE = "bitunix"
 _ZERO = Decimal(0)
 # Max. Abos je Verbindung laut Doku
 _MAX_SUBS = 300
+# Kline-REST laut Doku: max. 200 Kerzen je Abfrage, 10 Abfragen/s
+_KLINE_PAGE = 200
+_KLINE_PAUSE_S = 0.2
+_MINUTE_NS = 60_000_000_000
 
 
 def _decimal_step(precision: Any) -> Decimal:
@@ -93,6 +102,56 @@ def parse_trade(item: dict[str, Any], inst: Instrument, ts_ms: int, recv_ns: int
         qty=Decimal(item["v"]),
         aggressor=Side.BID if item["s"] == "buy" else Side.ASK,
     )
+
+
+def parse_klines(data: list[dict[str, Any]]) -> list[CandleBar]:
+    """Kline-REST -> Kerzen, aufsteigend sortiert (Bitunix liefert neueste zuerst)."""
+    bars = [
+        CandleBar(
+            open_time_ns=int(d["time"]) * 1_000_000,
+            open=Decimal(d["open"]),
+            high=Decimal(d["high"]),
+            low=Decimal(d["low"]),
+            close=Decimal(d["close"]),
+            volume=Decimal(d["baseVol"]),
+        )
+        for d in data
+    ]
+    return sorted(bars, key=lambda b: b.open_time_ns)
+
+
+class MinuteCandleBuilder:
+    """Laufende 1m-Kerze aus Trades (der REST liefert nur abgeschlossene Kerzen).
+
+    Die Minute, in der das Orderbuch startet, enthält nur die Trades ab dem Start.
+    """
+
+    def __init__(self, inst: Instrument) -> None:
+        self.inst = inst
+        self.bar: CandleBar | None = None
+
+    def on_trade(self, t: Trade) -> list[Event]:
+        price = t.price_ticks * self.inst.tick_size
+        minute = t.ts_ns // _MINUTE_NS * _MINUTE_NS
+        out: list[Event] = []
+        b = self.bar
+        if b is not None and minute < b.open_time_ns:
+            return out  # verspäteter Trade einer abgeschlossenen Minute
+        if b is not None and minute > b.open_time_ns:
+            out.append(self._event(b, closed=True, ts=t.ts_recv_ns))
+            b = None
+        if b is None:
+            b = CandleBar(minute, price, price, price, price, t.qty)
+        else:
+            b = CandleBar(b.open_time_ns, b.open, max(b.high, price), min(b.low, price), price,
+                          b.volume + t.qty)  # fmt: skip
+        self.bar = b
+        out.append(self._event(b, closed=False, ts=t.ts_recv_ns))
+        return out
+
+    def _event(self, bar: CandleBar, *, closed: bool, ts: int) -> Candle:
+        return Candle(exchange=EXCHANGE, symbol=self.inst.symbol, ts_recv_ns=ts, interval="1m",
+                      bar=bar, closed=closed)  # fmt: skip
 
 
 def parse_ticker(d: dict[str, Any], ts_ms: int, recv_ns: int) -> Ticker24h:
@@ -197,6 +256,7 @@ class BitunixAdapter:
         self.bus = bus
         self.inst: Instrument | None = None
         self.differ: BitunixBookDiffer | None = None
+        self.candles: MinuteCandleBuilder | None = None
         self._ws: aiohttp.ClientWebSocketResponse | None = None
         self._stop = asyncio.Event()
 
@@ -219,6 +279,7 @@ class BitunixAdapter:
                 raise RuntimeError(f"{self.symbol} ist auf Bitunix nicht handelbar")
             self.inst = inst = insts[self.symbol]
             self.differ = BitunixBookDiffer(inst)
+            self.candles = MinuteCandleBuilder(inst)
             now = time.time_ns()
             await self._publish(
                 [
@@ -233,6 +294,7 @@ class BitunixAdapter:
             )
             log.info("bitunix adapter starting", extra={"symbol": self.symbol})
             async with asyncio.TaskGroup() as tg:
+                tg.create_task(self._candle_history(session))
                 tg.create_task(_ping_loop(lambda: self._ws, self._stop, self.cfg.ping_interval_s))
                 tg.create_task(
                     run_ws(
@@ -247,6 +309,44 @@ class BitunixAdapter:
                     )
                 )
         log.info("bitunix adapter stopped", extra={"symbol": self.symbol})
+
+    async def _candle_history(self, session: aiohttp.ClientSession) -> None:
+        """1m-Kerzen rückwärts in Seiten zu 200 laden. Fehler hier sind nicht fatal: Ohne
+        Historie zeigt der Chart eben nur die Kerzen ab jetzt."""
+        bars: dict[int, CandleBar] = {}
+        end_ms: int | None = None
+        try:
+            while len(bars) < self.cfg.candle_history_bars and not self._stop.is_set():
+                params: dict[str, str | int] = {
+                    "symbol": self.symbol,
+                    "interval": "1m",
+                    "limit": min(_KLINE_PAGE, self.cfg.candle_history_bars - len(bars)),
+                }
+                if end_ms is not None:
+                    params["endTime"] = end_ms
+                data, _ = await get_json(
+                    session, f"{self.cfg.rest_url}/api/v1/futures/market/kline", params
+                )
+                page = parse_klines(data.get("data") or [])
+                new = [b for b in page if b.open_time_ns not in bars]
+                if not new:
+                    break
+                bars.update((b.open_time_ns, b) for b in new)
+                end_ms = page[0].open_time_ns // 1_000_000 - 1
+                await sleep_or_stop(self._stop, _KLINE_PAUSE_S)
+        except (aiohttp.ClientError, TimeoutError, RuntimeError, KeyError, ValueError) as e:
+            log.warning("bitunix klines failed", extra={"symbol": self.symbol, "error": repr(e)})
+        if bars and not self.bus.closed:
+            await self.bus.publish(
+                CandleHistory(
+                    exchange=EXCHANGE,
+                    symbol=self.symbol,
+                    ts_recv_ns=time.time_ns(),
+                    interval="1m",
+                    source="futures",
+                    bars=tuple(bars[t] for t in sorted(bars)),
+                )
+            )
 
     async def _on_ws(self, ws: aiohttp.ClientWebSocketResponse) -> None:
         self._ws = ws
@@ -285,7 +385,9 @@ class BitunixAdapter:
         if ch == "depth_books":
             await self._publish(self.differ.on_book(msg["data"], ts_ms, recv_ns))
         elif ch == "trade":
-            await self._publish([parse_trade(t, self.inst, ts_ms, recv_ns) for t in msg["data"]])
+            assert self.candles is not None
+            trades = [parse_trade(t, self.inst, ts_ms, recv_ns) for t in msg["data"]]
+            await self._publish([*trades, *(e for t in trades for e in self.candles.on_trade(t))])
 
 
 class BitunixMarketStats:

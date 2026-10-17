@@ -23,7 +23,13 @@ from cockbook.config import (
     LongTierConfig,
     UiConfig,
 )
-from cockbook.core.aggregation import ColumnDeltaEncoder, HeatmapAggregator, LongTermAccumulator
+from cockbook.core.aggregation import (
+    ColumnDeltaEncoder,
+    HeatmapAggregator,
+    HeatmapColumn,
+    LongTermAccumulator,
+)
+from cockbook.core.combined import CombinedBook
 from cockbook.core.eventbus import EventBus, Overflow
 from cockbook.core.events import (
     BookDelta,
@@ -43,7 +49,7 @@ from cockbook.core.events import (
     Ticker24h,
     Trade,
 )
-from cockbook.core.venue import split_key, venue_key
+from cockbook.core.venue import COMBINED, DEFAULT_EXCHANGE, combined_key, split_key, venue_key
 from cockbook.server.bridge import Bridge
 from cockbook.server.longterm_archive import LongTermArchive
 from cockbook.server.protocol import (
@@ -111,6 +117,12 @@ class MarketFeed:
         self.aggs: dict[str, HeatmapAggregator] = {}
         self._encoders: dict[str, ColumnDeltaEncoder] = {}
         self._hello_sent: set[str] = set()
+        # Multibook: kombinierter Key -> Keys der Börsen (Reihenfolge fest) und das Buch,
+        # sobald alle Bucket-Größen bekannt sind
+        self._combined: dict[str, list[str]] = {}
+        self._combined_book: dict[str, CombinedBook] = {}
+        self._combined_synced: dict[str, bool] = {}
+        self._registered: dict[str, dict[str, str]] = {}
         self._candles: dict[str, dict[int, CandleBar]] = {}
         self._candle_dirty: dict[str, tuple[CandleBar, bool]] = {}
         self._resyncs: dict[str, int] = {}
@@ -199,24 +211,30 @@ class MarketFeed:
             for b in e.bars:
                 store[b.open_time_ns] = b
             self._publish_candle_history(k)
+            for mk in self._mirrors(k):
+                self._publish_candle_history(mk)
             return
         if isinstance(e, Candle):
             if e.interval == "1m":
                 self._candles[k][e.bar.open_time_ns] = e.bar
                 self._candle_dirty[k] = (e.bar, e.closed)
+                for mk in self._mirrors(k):
+                    self._candle_dirty[mk] = (e.bar, e.closed)
             return
         agg.on_event(e)
         if isinstance(e, InstrumentInfo):
-            self.bridge.register_symbol(
-                k,
-                exchange=e.exchange,
-                base=e.symbol,
-                tick_size=str(e.tick_size),
-                kind=e.kind,
-                category=e.category,
-                market=e.market or "",
-                label=self.labels.get(e.symbol, e.symbol.removesuffix("USDT")),
-            )
+            info = {
+                "exchange": e.exchange,
+                "base": e.symbol,
+                "tick_size": str(e.tick_size),
+                "kind": e.kind,
+                "category": e.category,
+                "market": e.market or "",
+                "label": self.labels.get(e.symbol, e.symbol.removesuffix("USDT")),
+            }
+            self._registered[k] = info
+            self.bridge.register_symbol(k, **info)
+            self._maybe_register_combined(e.symbol)
         elif isinstance(e, BookSyncStatus):
             if not e.synced:
                 self._resyncs[k] += 1
@@ -229,6 +247,47 @@ class MarketFeed:
                 "sync",
                 encode_sync(k, e.ts_ns, e.synced, self._resyncs[k], e.reason),
             )
+
+    def _maybe_register_combined(self, base: str) -> None:
+        """Gibt es den Coin auf mehreren Börsen, wird zusätzlich ``MULTI:<Coin>`` angeboten."""
+        mk = combined_key(base)
+        if mk in self._combined:
+            return
+        legs = [venue_key(ex, base) for ex in (DEFAULT_EXCHANGE, "bitunix")]
+        if not all(k in self._registered for k in legs):
+            return
+        self._combined[mk] = legs
+        self._candles[mk] = self._candles[legs[0]]  # Binance-Kerzen als Preisreferenz
+        self._resyncs[mk] = 0
+        first = self._registered[legs[0]]
+        self.bridge.register_symbol(mk, **{**first, "exchange": COMBINED})
+
+    def _combined_columns(
+        self, boundary: int, cols: dict[str, HeatmapColumn]
+    ) -> list[tuple[str, HeatmapColumn]]:
+        out: list[tuple[str, HeatmapColumn]] = []
+        for mk, legs in self._combined.items():
+            if not all(k in cols for k in legs):
+                continue  # eine Börse hat (noch) kein Instrument/keine Bucket-Größe
+            book = self._combined_book.get(mk)
+            if book is None:
+                params = []
+                for k in legs:
+                    a = self.aggs[k]
+                    assert a.instrument is not None
+                    assert a.bucket_ticks is not None
+                    params.append((a.instrument.tick_size, a.bucket_ticks))
+                book = self._combined_book[mk] = CombinedBook(params, self.cfg.half_range_buckets)
+                self._send_hello_raw(mk, COMBINED, str(book.tick_size), book.bucket_ticks, [])
+            col = book.combine(boundary, [cols[k] for k in legs])
+            if col.synced != self._combined_synced.get(mk):
+                self._combined_synced[mk] = col.synced
+                reason = "" if col.synced else "mindestens eine Börse nicht synchron"
+                self.bridge.set_status(
+                    mk, encode_control("status", symbol=mk, synced=col.synced, reason=reason)
+                )
+            out.append((mk, col))
+        return out
 
     def _publish_candle_history(self, symbol: str) -> None:
         store = self._candles[symbol]
@@ -257,19 +316,33 @@ class MarketFeed:
             kind, frame = encoded
             self.bridge.publish_stat(k, kind, frame)
 
+    def _mirrors(self, key: str) -> list[str]:
+        """Kombinierte Keys, die die Kerzen dieses Keys mitbenutzen."""
+        return [mk for mk, legs in self._combined.items() if legs[0] == key]
+
     def _send_hello(self, symbol: str, agg: HeatmapAggregator) -> None:
         assert agg.instrument is not None
+        assert agg.bucket_ticks is not None
+        tiers = [t.name for t in self.cfg.long_tiers]
+        self._send_hello_raw(
+            symbol, agg.instrument.exchange, str(agg.instrument.tick_size), agg.bucket_ticks, tiers
+        )
+
+    def _send_hello_raw(
+        self, symbol: str, exchange: str, tick_size: str, bucket_ticks: int, tiers: list[str]
+    ) -> None:
+        """``tiers`` leer = keine Langzeit-Ansicht (kombiniertes Buch)."""
         self.bridge.set_hello(
             symbol,
             encode_control(
                 "hello",
                 mode=self.mode,
-                exchange=agg.instrument.exchange,
+                exchange=exchange,
                 symbol=symbol,
-                tick_size=str(agg.instrument.tick_size),
-                bucket_ticks=agg.bucket_ticks,
+                tick_size=tick_size,
+                bucket_ticks=bucket_ticks,
                 interval_ms=self.cfg.interval_ms,
-                long_tiers=[t.name for t in self.cfg.long_tiers],
+                long_tiers=tiers,
                 half_range_buckets=self.cfg.half_range_buckets,
                 ui=self.ui.model_dump(),
             ),
@@ -373,16 +446,17 @@ class MarketFeed:
             except TimeoutError:
                 pass
             self._flush_candles()
+            # Erst alle Spalten bauen (das kombinierte Buch liest die vollständigen Spalten
+            # der Börsen), dann delta-kodieren und senden
+            cols: dict[str, HeatmapColumn] = {}
             for sym, agg in self.aggs.items():
                 if not agg.ready:
                     continue
                 if sym not in self._hello_sent:
                     self._send_hello(sym, agg)
                 t0 = time.perf_counter_ns()
-                col = self._encoders[sym].encode(agg.make_column(boundary))
-                frames = encode_column(sym, col)
+                col = cols[sym] = agg.make_column(boundary)
                 dt = time.perf_counter_ns() - t0
-                self.bridge.publish(sym, frames, boundary // 1_000_000, keyframe=col.keyframe)
                 # Langzeit-Stufen: Buch abtasten, am Intervallende Spalte abschließen
                 bb, ba = col.best_bid, col.best_ask
                 for tier, s_ns, i_ns in tier_ns:
@@ -395,6 +469,10 @@ class MarketFeed:
                 self.columns += 1
                 self.build_ns_total += dt
                 self.build_ns_max = max(self.build_ns_max, dt)
+            for sym, col in [*cols.items(), *self._combined_columns(boundary, cols)]:
+                col = self._encoders[sym].encode(col)
+                frames = encode_column(sym, col)
+                self.bridge.publish(sym, frames, boundary // 1_000_000, keyframe=col.keyframe)
             if time.monotonic() - last_log > 60 and self.columns:
                 last_log = time.monotonic()
                 log.info(

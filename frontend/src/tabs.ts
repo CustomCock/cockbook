@@ -7,6 +7,7 @@
 
 import { sessionClass, sessionLong } from "./categories";
 import type { Markets } from "./markets";
+import { VENUE_LABEL, VENUE_SHORT, venueOf } from "./venue";
 
 const KEY = "cockbook.tabs.v1";
 
@@ -176,6 +177,12 @@ export class TabBar {
     const base = baseSymbol(sym);
     const name = el("span", "tab-name", this.markets.bySymbol.get(base)?.label ?? base);
     const kind: HTMLElement[] = [];
+    const venue = venueOf(base);
+    if (VENUE_SHORT[venue]) {
+      const v = el("span", `tab-venue venue-${venue}`, VENUE_SHORT[venue]);
+      v.title = VENUE_LABEL[venue];
+      kind.push(v);
+    }
     if (isLongTab(sym)) {
       root.classList.add("tab-long");
       kind.push(el("span", "tab-kind", "Langzeit"));
@@ -239,7 +246,7 @@ export class TabBar {
       t.chg.textContent =
         chg === null ? "" : `${chg > 0 ? "+" : ""}${chg.toLocaleString("de-DE", { maximumFractionDigits: 1, minimumFractionDigits: 1 })}%`;
       t.chg.className = `tab-chg num ${chg === null ? "" : chg > 0 ? "up" : chg < 0 ? "down" : ""}`;
-      const s = m?.sync;
+      const s = mk.sync(sym);
       const session = mk.session(sym);
       // Punkt: Orderbuch-Status; bei TradFi außerhalb der regulären Zeit Sitzungsfarbe
       t.dot.className = `dot ${!s ? "" : s.synced ? "ok" : "bad"} ${session ? `sess-${sessionClass(session)}` : ""}`;

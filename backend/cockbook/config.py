@@ -120,6 +120,8 @@ class BitunixConfig(_Model):
     # Zusätzlich/fest: hier eingetragene Symbole (always_on wirkt wie bei Binance)
     symbols: list[SymbolConfig] = Field(default_factory=list)
     rest_url: str = "https://fapi.bitunix.com"
+    # 1m-Kerzen beim Start eines Orderbuchs (REST liefert max. 200 je Abfrage, 10 Abfragen/s)
+    candle_history_bars: Annotated[int, Field(ge=0, le=5000)] = 1000
     ws_url: str = "wss://fapi.bitunix.com/public/"
     # Bitunix erlaubt max. 5 Nachrichten/s vom Client (auch Pings) – Ping alle n Sekunden
     ping_interval_s: Annotated[float, Field(ge=5)] = 20.0

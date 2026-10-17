@@ -1,6 +1,7 @@
 /**
  * Coin-Auswahl: Knopf in der Kopfzeile öffnet ein Menü mit
  *
+ *   [Binance] [Bitunix] [Kombiniert]                      (Börse)
  *   [Krypto 20] [Aktien 14] [ETFs 6] [Rohstoffe 8] …      [Suche]
  *   Coin            Preis     24h     Jahr   RSI 1D   (Spaltenkopf klickbar = sortieren)
  *   BTC          65.003,7   +2,0 %  +56,7 %     56
@@ -19,8 +20,16 @@ import { athStats } from "./cycles";
 import type { Markets } from "./markets";
 import type { Category } from "./net";
 import { rsiZone } from "./rsi";
+import { coinOf, keyFor, VENUE_LABEL, VENUES, venueOf, type Venue } from "./venue";
 
 const CAT_KEY = "cockbook.picker.v1";
+const VENUE_KEY = "cockbook.venue.v1";
+
+const VENUE_HINT: Record<Venue, string> = {
+  binance: "",
+  bitunix: "Bitunix-Futures: Orderbuch startet bei Auswahl (Bitunix schickt das ganze Buch).",
+  multi: "Beide Börsen addiert: Liquidität und Trades von Binance + Bitunix in einer Heatmap.",
+};
 
 type SortKey = "default" | "name" | "price" | "chg" | "ytd" | "rsi";
 
@@ -64,6 +73,13 @@ export class CoinPicker {
   private pop: HTMLElement;
   private catBar: HTMLElement;
   private catButtons = new Map<Category, HTMLButtonElement>();
+  private venueBar: HTMLElement;
+  private venueHint: HTMLElement;
+  private venueButtons = new Map<Venue, HTMLButtonElement>();
+  private venue: Venue = "binance";
+  /** Schnell-Umschalter neben dem Knopf: gleicher Coin, andere Börse */
+  private quick: HTMLElement;
+  private quickButtons = new Map<Venue, HTMLButtonElement>();
   private search: HTMLInputElement;
   private list: HTMLElement;
   private empty: HTMLElement;
@@ -87,6 +103,8 @@ export class CoinPicker {
     try {
       const c = localStorage.getItem(CAT_KEY);
       if (c && CATEGORY_GROUPS.some((g) => g.id === c)) this.category = c as Category;
+      const v = localStorage.getItem(VENUE_KEY);
+      if (v && (VENUES as string[]).includes(v)) this.venue = v as Venue;
     } catch {
       /* egal */
     }
@@ -98,6 +116,16 @@ export class CoinPicker {
     this.btnName = el("span", "picker-name", "–");
     this.btnSub = el("span", "picker-sub");
     this.btn.append(this.btnDot, this.btnName, this.btnSub, el("span", "picker-caret", "▾"));
+    this.quick = el("div", "venue-quick");
+    for (const v of VENUES) {
+      const b = el("button", `venue-${v}`, v === "multi" ? "Σ" : VENUE_LABEL[v]);
+      b.type = "button";
+      b.addEventListener("click", () => {
+        if (this.active) this.onSelect(keyFor(v, coinOf(this.active)));
+      });
+      this.quickButtons.set(v, b);
+      this.quick.append(b);
+    }
 
     this.pop = el("div", "picker-pop");
     this.pop.hidden = true;
@@ -111,6 +139,9 @@ export class CoinPicker {
     this.search.placeholder = "Suchen …";
     top.append(this.catBar, this.search);
     this.sessLine = el("div", "picker-sessline");
+    this.venueBar = el("div", "picker-venues");
+    this.venueBar.setAttribute("role", "tablist");
+    this.venueHint = el("div", "picker-venue-hint");
 
     // Spaltenköpfe (Klick = sortieren)
     const head = el("div", "picker-row picker-colhead");
@@ -139,8 +170,8 @@ export class CoinPicker {
       el("span", "dot"),
       " startet bei Auswahl   ·   ↑↓ Enter  ·  ←→ Kategorie  ·  Esc",
     );
-    this.pop.append(top, this.sessLine, head, this.list, this.empty, foot);
-    root.append(this.btn, this.pop);
+    this.pop.append(this.venueBar, this.venueHint, top, this.sessLine, head, this.list, this.empty, foot);
+    root.append(this.btn, this.quick, this.pop);
 
     this.btn.addEventListener("click", () => (this.pop.hidden ? this.open() : this.close()));
     this.search.addEventListener("input", () => this.refresh(true));
@@ -183,6 +214,7 @@ export class CoinPicker {
         this.rows.delete(sym);
       }
     }
+    this.buildVenueBar();
     this.buildCategoryBar();
     if (!this.pop.hidden) this.refresh(false);
     if (this.active) this.setActive(this.active);
@@ -192,8 +224,21 @@ export class CoinPicker {
     this.active = symbol;
     for (const r of this.rows.values()) r.el.classList.toggle("active", r.sym === symbol);
     const m = this.markets.bySymbol.get(symbol);
-    this.btnName.textContent = m?.label ?? symbol;
-    this.btnSub.textContent = `${symbol} · Binance USDⓈ-M${m?.kind === "tradfi" ? ` · ${shortTitle(m.category)}` : ""}`;
+    this.btnName.textContent = m?.label ?? coinOf(symbol);
+    const venue = venueOf(symbol);
+    const where = venue === "binance" ? "Binance USDⓈ-M" : venue === "bitunix" ? "Bitunix" : "Binance + Bitunix";
+    this.btnSub.textContent = `${coinOf(symbol)} · ${where}${m?.kind === "tradfi" ? ` · ${shortTitle(m.category)}` : ""}`;
+    this.btn.className = `picker-btn venue-${venue}`;
+    const have = new Set(this.symbols);
+    let shown = 0;
+    for (const [v, b] of this.quickButtons) {
+      const key = keyFor(v, coinOf(symbol));
+      b.hidden = !have.has(key);
+      shown += b.hidden ? 0 : 1;
+      b.classList.toggle("on", v === venue);
+      b.title = `${coinOf(symbol)} auf ${VENUE_LABEL[v]}${v === "multi" ? " (Binance + Bitunix addiert)" : ""}`;
+    }
+    this.quick.hidden = shown < 2;
   }
 
   open(): void {
@@ -202,6 +247,8 @@ export class CoinPicker {
     // Mit der Kategorie des aktuellen Coins öffnen
     const cat = this.active ? this.markets.bySymbol.get(this.active)?.category : undefined;
     if (cat) this.category = cat;
+    if (this.active) this.venue = venueOf(this.active);
+    this.buildVenueBar();
     this.buildCategoryBar();
     this.update(Date.now());
     this.refresh(false);
@@ -240,9 +287,63 @@ export class CoinPicker {
     return this.markets.bySymbol.get(sym)?.category ?? "crypto";
   }
 
+  /** Symbole der gewählten Börse */
+  private venueSymbols(): string[] {
+    return this.symbols.filter((s) => venueOf(s) === this.venue);
+  }
+
+  private buildVenueBar(): void {
+    const counts = new Map<Venue, number>();
+    for (const s of this.symbols) counts.set(venueOf(s), (counts.get(venueOf(s)) ?? 0) + 1);
+    if (!counts.get(this.venue)) this.venue = VENUES.find((v) => counts.get(v)) ?? "binance";
+    this.venueBar.replaceChildren();
+    this.venueButtons.clear();
+    for (const v of VENUES) {
+      const n = counts.get(v);
+      if (!n) continue;
+      const b = el("button", `picker-cat venue-${v}`);
+      b.type = "button";
+      b.setAttribute("role", "tab");
+      b.title = VENUE_HINT[v] || VENUE_LABEL[v];
+      b.append(el("span", "", VENUE_LABEL[v]), el("span", "picker-cat-n", String(n)));
+      b.addEventListener("click", () => this.setVenue(v));
+      this.venueButtons.set(v, b);
+      this.venueBar.append(b);
+    }
+    // Nur eine Börse -> keine Leiste nötig
+    this.venueBar.hidden = this.venueButtons.size < 2;
+    this.markVenue();
+  }
+
+  private markVenue(): void {
+    for (const [v, b] of this.venueButtons) {
+      b.classList.toggle("on", v === this.venue);
+      b.setAttribute("aria-selected", String(v === this.venue));
+    }
+    this.venueHint.textContent = VENUE_HINT[this.venue];
+    this.venueHint.hidden = this.venueBar.hidden || !VENUE_HINT[this.venue];
+  }
+
+  private setVenue(v: Venue): void {
+    this.venue = v;
+    try {
+      localStorage.setItem(VENUE_KEY, v);
+    } catch {
+      /* egal */
+    }
+    this.markVenue();
+    this.buildCategoryBar();
+    this.refresh(true);
+    // Den aktuellen Coin markieren, falls es ihn an dieser Börse gibt
+    if (this.active) {
+      const i = this.visible.findIndex((r) => r.sym === keyFor(v, coinOf(this.active!)));
+      if (i >= 0) this.setHighlight(i, true);
+    }
+  }
+
   private buildCategoryBar(): void {
     const counts = new Map<Category, number>();
-    for (const s of this.symbols) counts.set(this.categoryOf(s), (counts.get(this.categoryOf(s)) ?? 0) + 1);
+    for (const s of this.venueSymbols()) counts.set(this.categoryOf(s), (counts.get(this.categoryOf(s)) ?? 0) + 1);
     if (!counts.get(this.category)) this.category = CATEGORY_GROUPS.find((g) => counts.get(g.id))?.id ?? "crypto";
     this.catBar.replaceChildren();
     this.catButtons.clear();
@@ -292,14 +393,23 @@ export class CoinPicker {
   /** Liste neu filtern/sortieren. `resetHighlight`: Auswahl auf die erste Zeile. */
   private refresh(resetHighlight: boolean): void {
     const q = this.search.value.trim().toUpperCase();
-    let rows = this.symbols.map((s) => this.rows.get(s)!).filter(Boolean);
+    let rows = this.venueSymbols().map((s) => this.rows.get(s)!).filter(Boolean);
     if (q) {
-      rows = rows.filter((r) => r.sym.includes(q) || (this.markets.bySymbol.get(r.sym)?.label ?? "").toUpperCase().includes(q));
+      rows = rows.filter((r) => coinOf(r.sym).includes(q) || (this.markets.bySymbol.get(r.sym)?.label ?? "").toUpperCase().includes(q));
     } else {
       rows = rows.filter((r) => this.categoryOf(r.sym) === this.category);
     }
     const { key, dir } = this.sort;
-    if (key === "name") {
+    if (q && key === "default") {
+      // Exakter Name vor Anfang vor irgendwo enthalten: "BTC" -> BTC, nicht BTCUSD
+      const rank = (r: Row) => {
+        const label = (this.markets.bySymbol.get(r.sym)?.label ?? "").toUpperCase();
+        const coin = coinOf(r.sym);
+        if (label === q || coin === q || coin === `${q}USDT`) return 0;
+        return label.startsWith(q) || coin.startsWith(q) ? 1 : 2;
+      };
+      rows = rows.map((r, i) => ({ r, i, k: rank(r) })).sort((a, b) => a.k - b.k || a.i - b.i).map((x) => x.r);
+    } else if (key === "name") {
       rows.sort((a, b) => dir * a.name.textContent!.localeCompare(b.name.textContent!, "de"));
     } else if (key !== "default") {
       // fehlende Werte immer ans Ende
@@ -367,7 +477,7 @@ export class CoinPicker {
     const searching = this.search.value.trim() !== "";
     const markets = new Set<string>();
     if (!searching && this.category !== "crypto") {
-      for (const s of this.symbols) {
+      for (const s of this.venueSymbols()) {
         const m = this.markets.bySymbol.get(s);
         if (m?.category === this.category && m.market) markets.add(m.market);
       }
@@ -394,7 +504,7 @@ export class CoinPicker {
   update(now: number): void {
     const mk = this.markets;
     if (this.active) {
-      const s = mk.bySymbol.get(this.active)?.sync;
+      const s = mk.sync(this.active);
       this.btnDot.className = `dot ${!s ? "" : s.synced ? "ok" : "bad"}`;
     }
     if (this.pop.hidden) return;
@@ -408,7 +518,8 @@ export class CoinPicker {
       const chg = mk.change24h(r.sym);
       r.chg.textContent = pct(chg);
       r.chg.className = `num ${updown(chg)}`;
-      const ytd = m?.daily ? (athStats(m.daily, price, now)?.ytdPct ?? null) : null;
+      const daily = mk.daily(r.sym);
+      const ytd = daily ? (athStats(daily, price, now)?.ytdPct ?? null) : null;
       r.ytd.textContent = pct(ytd);
       r.ytd.className = `num ${updown(ytd)}`;
       const rsi = mk.rsi1d(r.sym, now);
@@ -418,7 +529,7 @@ export class CoinPicker {
       const session = mk.session(r.sym);
       r.sess.textContent = session ? sessionText(session) : "";
       r.sess.className = `sess ${sessionClass(session)}`;
-      const s = m?.sync;
+      const s = mk.sync(r.sym);
       r.dot.className = `dot ${!s ? "" : s.synced ? "ok" : "bad"}`;
       const sessTitle = m?.kind === "tradfi" ? ` · Handel: ${sessionLong(session)}` : "";
       r.el.title =

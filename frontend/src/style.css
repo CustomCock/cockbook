@@ -490,6 +490,8 @@ button:hover {
 
 .picker {
   position: relative;
+  display: flex;
+  align-items: center;
 }
 
 .picker-btn {
@@ -1208,4 +1210,83 @@ button:hover {
   color: var(--fg);
   font: inherit;
   cursor: pointer;
+}
+
+/* --- Börse (Multibook) ------------------------------------------------------------------ */
+
+.picker-venues {
+  display: flex;
+  gap: 2px;
+  margin-bottom: 8px;
+  padding: 3px;
+  border-radius: 8px;
+  background: var(--bg);
+  width: max-content;
+  max-width: 100%;
+}
+
+.picker-venues .picker-cat.on {
+  box-shadow: inset 0 -2px 0 var(--venue, var(--accent));
+}
+
+.venue-binance { --venue: #e8c547; }
+.venue-bitunix { --venue: #4fd1c5; }
+.venue-multi { --venue: var(--accent); }
+
+.tab-venue {
+  padding: 0 5px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--venue) 18%, transparent);
+  color: var(--venue);
+  font-size: 10px;
+  letter-spacing: 0.03em;
+}
+
+.picker-venue-hint {
+  margin: -4px 0 8px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.venue-quick {
+  display: flex;
+  gap: 2px;
+  margin-left: 6px;
+  padding: 2px;
+  border-radius: 7px;
+  background: var(--bg);
+}
+
+.venue-quick[hidden] {
+  display: none;
+}
+
+.venue-quick button {
+  padding: 3px 8px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.venue-quick button[hidden] {
+  display: none;
+}
+
+.venue-quick button:hover {
+  color: var(--fg);
+}
+
+.venue-quick button.on {
+  background: var(--panel-2);
+  color: var(--fg);
+  box-shadow: inset 0 -2px 0 var(--venue);
+}
+
+.picker-btn.venue-bitunix .picker-sub,
+.picker-btn.venue-multi .picker-sub {
+  color: var(--venue);
 }

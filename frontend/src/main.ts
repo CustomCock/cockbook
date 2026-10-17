@@ -27,6 +27,7 @@ import { drawRsiPane, RSI_PANE_H } from "./rsipane";
 import { Sidebar, type CycleChoice } from "./sidebar";
 import { baseSymbol, isLongTab, LONG_SUFFIX, TabBar, TabModel } from "./tabs";
 import { downsample, HeatmapStore, rowsFor, type TradeBin } from "./store";
+import { coinOf, keyFor, venueOf } from "./venue";
 import { panY, priceUnit, recenter, visibleCols, xToCol, yToUnit, zoomX, zoomY, type View } from "./viewport";
 
 takeTokenFromHash();
@@ -345,6 +346,8 @@ function activateTab(id: string): void {
 }
 
 function openLong(sym: string): void {
+  // Das kombinierte Buch sammelt keine eigene Langzeit-Historie -> die von Binance zeigen
+  if (venueOf(sym) === "multi") sym = keyFor("binance", coinOf(sym));
   tabModel.open(sym + LONG_SUFFIX);
   tabs.render();
   longActive = true;

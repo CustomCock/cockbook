@@ -8,6 +8,7 @@ import { aggregate, CANDLE_INTERVALS, type Bar, type CandleMinutes } from "./can
 import { athStats, CYCLE_PRESETS, cycleStats, DAY_MS, parseDate } from "./cycles";
 import { FEATURES, type FeatureState } from "./features";
 import { liqPerSecond, topLiquidated, type Markets } from "./markets";
+import { coinOf, keyFor, venueOf } from "./venue";
 import { lastRsi, RSI_OVERBOUGHT, RSI_OVERSOLD, RSI_PERIOD, rsiZone } from "./rsi";
 
 export interface CycleChoice {
@@ -339,7 +340,7 @@ export class Sidebar {
   setActive(symbol: string): void {
     this.active = symbol;
     const label = this.markets.bySymbol.get(symbol)?.label ?? base(symbol);
-    this.derivTitle.textContent = `Derivate · ${label}`;
+    this.derivTitle.textContent = `Derivate · ${label}${venueOf(symbol) === "multi" ? " (Binance)" : ""}`;
     this.histTitle.textContent = `ATH & Zyklen · ${label}`;
     this.indTitle.textContent = `Indikatoren · ${label}`;
   }
@@ -348,7 +349,11 @@ export class Sidebar {
     const mk = this.markets;
     const sym = this.active;
     if (!sym) return;
-    const m = mk.bySymbol.get(sym);
+    // Kombiniert: Derivate-Kennzahlen von Binance; Bitunix liefert sie (noch) nicht
+    const venue = venueOf(sym);
+    const m = mk.bySymbol.get(venue === "multi" ? keyFor("binance", coinOf(sym)) : sym);
+    const wait = venue === "bitunix" ? "für Bitunix nicht verfügbar" : "warte auf Daten …";
+    const wait5 = venue === "bitunix" ? wait : "warte auf Daten (alle 5 min) …";
     const dec = m?.decimals ?? 2;
     const px = (v: number) => v.toLocaleString("de-DE", { minimumFractionDigits: dec, maximumFractionDigits: dec });
     const set = (id: string, ...nodes: (Node | string)[]) => {
@@ -361,9 +366,10 @@ export class Sidebar {
       return d;
     };
     const price = mk.price(sym);
+    const daily = mk.daily(sym);
 
     // --- ATH & Jahr --------------------------------------------------------------------
-    const ath = m?.daily ? athStats(m.daily, price, now) : null;
+    const ath = daily ? athStats(daily, price, now) : null;
     if (ath) {
       set(
         "ath",
@@ -382,7 +388,7 @@ export class Sidebar {
     // --- Zyklus ------------------------------------------------------------------------
     const start = parseDate(this.cycle.start);
     const end = parseDate(this.cycle.end);
-    const c = m?.daily ? cycleStats(m.daily, start, end, now, price) : null;
+    const c = daily ? cycleStats(daily, start, end, now, price) : null;
     const preset = CYCLE_PRESETS.find((p) => p.id === this.cycle.id);
     if (c) {
       const nodes: (Node | string)[] = [
@@ -406,7 +412,7 @@ export class Sidebar {
       if (c.partial) nodes.push(el("div", "hint", `Daten erst ab ${fmtDate(c.firstDataTs)} – Zyklus nur teilweise abgedeckt`));
       if (preset?.estimatedEnd) nodes.push(el("div", "hint", "* Ende geschätzt (nächstes Halving ≈ April 2028)"));
       set("cycles", ...nodes);
-    } else set("cycles", m?.daily ? "keine Daten im gewählten Zeitraum" : "lade Tageshistorie …");
+    } else set("cycles", daily ? "keine Daten im gewählten Zeitraum" : "lade Tageshistorie …");
 
     // --- RSI ---------------------------------------------------------------------------
     const rsiVal = this.values.get("rsiOverview");
@@ -455,8 +461,8 @@ export class Sidebar {
         line("Nächstes Funding", m.mark.nft ? fmtCountdown(m.mark.nft - now) : "–"),
       );
     } else {
-      set("markPrice", "warte auf Daten …");
-      set("funding", "warte auf Daten …");
+      set("markPrice", wait);
+      set("funding", wait);
     }
 
     if (m?.oi) {
@@ -465,12 +471,12 @@ export class Sidebar {
       const c60 = mk.oiChange(sym, 60);
       set(
         "openInterest",
-        line("OI", `${fmtCompact(m.oi.oi)} ${base(sym)}`),
+        line("OI", `${fmtCompact(m.oi.oi)} ${base(coinOf(sym))}`),
         line("Wert", `${fmtCompact(usd)} USDT`),
         line("Δ 5 min", c5 === null ? "sammle …" : fmtPct(c5), cls(c5)),
         line("Δ 1 h", c60 === null ? "sammle …" : fmtPct(c60), cls(c60)),
       );
-    } else set("openInterest", "warte auf Daten …");
+    } else set("openInterest", wait);
 
     if (m?.ls) {
       set(
@@ -478,7 +484,7 @@ export class Sidebar {
         bar(m.ls.long, m.ls.short, `Long ${fmtPct(m.ls.long * 100, 1, false)}`, `Short ${fmtPct(m.ls.short * 100, 1, false)}`),
         line(`Ratio (${m.ls.p})`, m.ls.ratio.toLocaleString("de-DE", { maximumFractionDigits: 3 })),
       );
-    } else set("longShort", "warte auf Daten (alle 5 min) …");
+    } else set("longShort", wait5);
 
     if (m?.tv) {
       set(
@@ -486,7 +492,7 @@ export class Sidebar {
         bar(m.tv.buy, m.tv.sell, `Kauf ${fmtCompact(m.tv.buy)}`, `Verkauf ${fmtCompact(m.tv.sell)}`),
         line(`Buy/Sell (${m.tv.p})`, m.tv.ratio.toLocaleString("de-DE", { maximumFractionDigits: 3 })),
       );
-    } else set("takerVolume", "warte auf Daten (alle 5 min) …");
+    } else set("takerVolume", wait5);
 
     if (m?.ticker) {
       set(

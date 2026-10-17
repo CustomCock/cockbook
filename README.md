@@ -2,7 +2,8 @@
 
 > **Status: Work in Progress** – Liquidity-Heatmap (live + Langzeit) mit Trades, Kerzen, RSI und
 > DOM-Ladder (WebGL) für die Top-20-Coins sowie alle TradFi-Kontrakte von Binance USDⓈ-M (Aktien, ETFs,
-> Rohstoffe), Coin-Tabs, Seitenleiste mit Derivate-Kennzahlen. CVD, Alerts, Replay usw. folgen.
+> Rohstoffe), dazu alle Bitunix-Futures und ein kombiniertes Buch (Multibook Binance + Bitunix),
+> Coin-Tabs, Seitenleiste mit Derivate-Kennzahlen. CVD, Alerts, Replay usw. folgen.
 
 Freies, lokal laufendes Orderflow- & Liquidity-Heatmap-Tool für Krypto-Märkte, inspiriert von Bookmap.
 Es nutzt ausschließlich öffentliche, kostenlose Börsen-Datenfeeds und läuft unter Ubuntu und Windows.
@@ -81,6 +82,15 @@ Coin startet beim ersten Auswählen und läuft dann weiter – die Heatmap begin
 Moment. Gold und Silber sind TradFi-Kontrakte mit Handelspausen (z. B. am Wochenende); in einer Pause
 kommen keine Orderbuch-Updates.
 
+**Multibook (Binance + Bitunix):** Im Coin-Menü wählt die obere Leiste die Börse – **Binance**,
+**Bitunix** (alle handelbaren Bitunix-Futures) oder **Kombiniert** (Σ: Liquidität und Trades beider
+Börsen addiert). Neben dem Coin-Knopf wechselt ein Schnell-Umschalter für denselben Coin die Börse.
+Bitunix-Orderbücher starten erst bei Auswahl (Bitunix schickt bei jeder Änderung das ganze Buch).
+Das kombinierte Buch rechnet in der feinsten gemeinsamen Tick-Größe und mit dem gröberen der beiden
+Preis-Buckets; es gilt nur als synchron, wenn beide Bücher synchron sind. Funding, Open Interest usw.
+gibt es nur von Binance (im kombinierten Buch von dort übernommen); die Langzeit-Heatmap des
+kombinierten Buchs zeigt die von Binance.
+
 Die Seitenleiste enthält alle Funktionen zum Ein-/Ausschalten (gelten für alle Coins):
 
 - **Chart:** Liquidity-Heatmap, Weich zeichnen, Trade-Bubbles, Best Bid/Ask, Liquidationen, Preisgitter,
@@ -106,8 +116,7 @@ Die Seitenleiste enthält alle Funktionen zum Ein-/Ausschalten (gelten für alle
 - **Indikatoren:** RSI(14) nach Wilder für 1m, 5m, 15m, 1h und 1D; im RSI-Fenster im Intervall der Kerzen
 - **Derivate:** Mark-/Indexpreis, Funding Rate (mit Countdown), Open Interest (Δ 5 min / 1 h),
   Longs vs Shorts, Taker Buy/Sell, 24h-Statistik, Liquidationen des Gesamtmarkts (sekündlich)
-- **Geplant:** Liquidation Heatmap, Funding-Heatmap, RSI-Heatmap aller Coins, Depth Delta,
-  Multi-Börsen-Orderbuch …
+- **Geplant:** Liquidation Heatmap, Funding-Heatmap, RSI-Heatmap aller Coins, Depth Delta …
 
 Bedienung: Mausrad = Preis-Zoom, Shift+Mausrad (oder Mausrad über der Zeitachse) = Zeit-Zoom,
 Ziehen = verschieben (auch zurück in der Zeit), Doppelklick oder `C` = zurück zu Live mit
