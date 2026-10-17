@@ -344,3 +344,20 @@ async def test_known_error_codes_are_explained(env: tuple[Fake, Any]) -> None:
     from cockbook.trading.live.trader import _KNOWN_CODES
 
     assert "100 USD" in _KNOWN_CODES[30016]
+
+
+async def test_non_usdt_pairs_blocked_except_closing(env: tuple[Fake, Any]) -> None:
+    """Beim Nutzer: BTCUSD (USD-abgerechnet) -> change_leverage "Parameter error"."""
+    fake, make = env
+    t = make()
+    usd = "BITUNIX:BTCUSD"
+    r = await t.handle(req("leverage", symbol=usd, value=10))
+    assert not r["ok"]
+    assert "kein USDT-Paar" in r["message"]
+    assert "BTCUSDT" in r["message"]
+    r = await t.handle(req("order", symbol=usd, side="buy", kind="market", qty="100"))
+    assert "kein USDT-Paar" in r["message"]
+    assert fake.calls == []
+    s = await t.handle(req("settings", symbol=usd))
+    assert s["data"]["usdt"] is False
+    assert (await t.handle(req("cancel", symbol=usd, id="1")))["ok"]  # Risikoabbau geht

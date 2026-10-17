@@ -494,7 +494,10 @@ export class TradePanel {
 
   private tradable(): boolean {
     if (!this.ctx) return false;
-    if (this.saved.mode === "live") return venueOf(this.ctx.symbol) === "bitunix" && this.live.canTrade;
+    if (this.saved.mode === "live") {
+      // Nur USDT-Paare: z. B. BTCUSD wird in USD abgerechnet (Menge in Kontrakten)
+      return venueOf(this.ctx.symbol) === "bitunix" && coinOf(this.ctx.symbol).endsWith("USDT") && this.live.canTrade;
+    }
     return venueOf(this.ctx.symbol) !== "multi" && !!this.state;
   }
 
@@ -662,6 +665,8 @@ export class TradePanel {
           ? "Nur lesen – Live-Trading ist in config.yaml aus."
           : venue !== "bitunix"
             ? "Live gibt es nur für Bitunix-Coins – oben im Coin-Menü Bitunix wählen."
+            : c && !coinOf(c.symbol).endsWith("USDT")
+              ? `${coinOf(c.symbol)} ist kein USDT-Paar (Abrechnung in USD, Menge in Kontrakten) – live nur mit USDT-Paaren, z. B. ${coinOf(c.symbol).replace(/USD$/, "")}USDT.`
             : "Gesperrt – oben „Live-Trading freischalten“."
       : !s
         ? "Warte auf das Backend …"

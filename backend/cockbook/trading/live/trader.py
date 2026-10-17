@@ -143,6 +143,15 @@ class LiveTrader:
         sym = self._raw(key) if isinstance(key, str) else None
         if sym is None and op not in ("cancel_all", "close_all"):
             raise LiveRejectedError("Symbol fehlt")
+        if sym is not None and not sym.endswith("USDT") and op not in _RISK_REDUCING:
+            # z. B. BTCUSD: in USD abgerechnet, Menge in USD-Kontrakten – CockBook rechnet in
+            # USDT/Coin. Bitunix lehnt "marginCoin USDT" dort mit "Parameter error" ab.
+            if op == "settings":
+                return "", {"symbol": key, "leverage": None, "margin_mode": None, "usdt": False}
+            raise LiveRejectedError(
+                f"{sym} ist kein USDT-Paar (Abrechnung in USD, Menge in Kontrakten) – Live-Trading "
+                f"geht in CockBook nur mit USDT-Paaren, z. B. {sym.removesuffix('USD')}USDT"
+            )
         if op == "settings":
             assert sym is not None
             s = await self.rest.trading_settings(sym)
