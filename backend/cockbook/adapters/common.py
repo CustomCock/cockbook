@@ -75,6 +75,7 @@ async def run_ws(
     on_message: Callable[[str, int], Awaitable[None]],
     on_open: Callable[[], Awaitable[None]] | None = None,
     on_close: Callable[[str], Awaitable[None]] | None = None,
+    on_ws: Callable[[aiohttp.ClientWebSocketResponse], Awaitable[None]] | None = None,
 ) -> None:
     """Hält eine WebSocket-Verbindung am Leben, bis ``stop`` gesetzt ist.
 
@@ -93,6 +94,9 @@ async def run_ws(
             async with session.ws_connect(url, autoping=True, heartbeat=None) as ws:
                 connected_at = time.monotonic()
                 log.info("ws connected", extra={"conn": name, "url": url})
+                if on_ws is not None:
+                    # Börsen mit Abo-Kommandos/JSON-Pings (z. B. Bitunix) brauchen die Verbindung
+                    await on_ws(ws)
                 if on_open is not None:
                     await on_open()
                 stop_task = asyncio.ensure_future(stop.wait())

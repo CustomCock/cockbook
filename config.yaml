@@ -106,8 +106,25 @@ exchanges:
       stale_timeout_s: 30         # keine Daten -> Verbindung tot
       stable_after_s: 60
 
+  # Zweite Börse für Multibook (Coin-Menü: Börse umschalten, "Kombiniert" = beide Bücher addiert).
+  # Bitunix schickt bei jeder Änderung das ganze Buch (BTC ~500 KB, ~3x/s) – darum Orderbuch nur
+  # bei Auswahl; Preise/24h kommen für alle Coins über einen Sammel-Stream.
+  - name: bitunix
+    enabled: true
+    all_symbols: true           # alle handelbaren Bitunix-Paare ins Menü
+    symbols: []                 # z. B. [{symbol: BTCUSDT, always_on: true}] = Langzeit-Daten auch für Bitunix
+    rest_url: https://fapi.bitunix.com
+    ws_url: wss://fapi.bitunix.com/public/
+    ping_interval_s: 20         # Bitunix erlaubt max. 5 Nachrichten/s vom Client
+    reconnect:
+      initial_backoff_s: 1
+      max_backoff_s: 60
+      stale_timeout_s: 30
+      stable_after_s: 60
+
 aggregation:
   interval_ms: 100        # Breite einer Heatmap-Spalte
+  keyframe_every_columns: 50  # alle 5 s vollständige Spalte, dazwischen nur Änderungen
   bucket_bps: 0.06        # Preis-Bucket ~ 0.06 Basispunkte des Preises, je Symbol automatisch
                           # auf runde Tick-Vielfache gerundet (BTC ~80k -> 0.50 USDT)
   half_range_buckets: 8000  # max. Buckets je Seite um den Mid (BTC: 8000 x 0.50 = +-4000 USDT);

@@ -99,6 +99,10 @@ class HeatmapColumn:
     # Bucket des Mids – das Frontend richtet seinen Puffer daran aus, nicht an der
     # (oft viel breiteren) Spalte
     center: int | None = None
+    # Delta-Kodierung (``ColumnDeltaEncoder``): Schlüsselbild = vollständige Spalte,
+    # sonst nur geänderte Buckets (0 = Bucket leer). ``seq`` zählt je Symbol lückenlos.
+    keyframe: bool = True
+    seq: int = 0
 
     def items(self) -> list[tuple[int, float]]:
         """(bucket, wert) aller belegten Buckets – unabhängig von dicht/dünn."""
@@ -317,6 +321,62 @@ class HeatmapAggregator:
                 cb = b // factor
                 out[cb] = out.get(cb, 0.0) + float(v)
         return out
+
+
+class ColumnDeltaEncoder:
+    """Macht aus vollständigen Spalten Schlüsselbilder + Änderungen (wie Videokompression).
+
+    Bitunix liefert das ganze Buch (BTC: ~6000 belegte Buckets ≈ 50 KB je 100-ms-Spalte),
+    geändert sind davon pro Spalte meist nur ein paar Dutzend. Statt dafür im Aggregator
+    jede Bucket-Änderung mitzuschreiben, vergleicht der Encoder mit der zuletzt *gesendeten*
+    Spalte: Das erfasst automatisch auch Buckets, die durch eine Verschiebung des Fensters
+    oder das Altern des Gedächtnisses wegfallen – genau die Fälle, die man beim Mitschreiben
+    leicht vergisst. Kosten: ein Dict-Vergleich je Spalte, O(belegte Buckets).
+
+    Schlüsselbild, wenn: erste Spalte, Spalte nicht synchron, alle ``keyframe_every``
+    Spalten (damit neue/abgehängte Clients schnell wieder einsteigen) oder wenn die
+    Änderungen mehr als halb so groß wären wie die ganze Spalte (z. B. großer Kurssprung).
+    """
+
+    def __init__(self, keyframe_every: int) -> None:
+        if keyframe_every < 1:
+            raise ValueError("keyframe_every muss >= 1 sein")
+        self.keyframe_every = keyframe_every
+        self._prev: dict[int, float] | None = None
+        self._since_key = 0
+        self._seq = 0
+
+    def encode(self, col: HeatmapColumn) -> HeatmapColumn:
+        self._seq += 1
+        col.seq = self._seq
+        if not col.synced:
+            self._prev = None
+            col.keyframe = True
+            return col
+        cur = dict(col.items())
+        prev = self._prev
+        self._prev = cur
+        if prev is not None and self._since_key + 1 < self.keyframe_every:
+            changed = [(b, v) for b, v in cur.items() if prev.get(b) != v]
+            changed.extend((b, 0.0) for b in prev.keys() - cur.keys())
+            if 2 * len(changed) <= len(cur):
+                self._since_key += 1
+                changed.sort()
+                base = changed[0][0] if changed else (col.center or 0)
+                col.base_bucket = base
+                col.idx = array("i", (b - base for b, _ in changed))
+                col.values = array("f", (v for _, v in changed))
+                col.keyframe = False
+                return col
+        self._since_key = 0
+        col.keyframe = True
+        if col.idx is None:  # dichte Spalte -> dünn, damit beide Fälle gleich aussehen
+            items = sorted(cur.items())
+            base = items[0][0] if items else col.base_bucket
+            col.base_bucket = base
+            col.idx = array("i", (b - base for b, _ in items))
+            col.values = array("f", (v for _, v in items))
+        return col
 
 
 class LongTermAccumulator:

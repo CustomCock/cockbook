@@ -16,8 +16,14 @@ from pathlib import Path
 import msgpack
 
 from cockbook.adapters.binance import BinanceKlines
-from cockbook.config import AggregationConfig, AppConfig, LongTierConfig, UiConfig
-from cockbook.core.aggregation import HeatmapAggregator, LongTermAccumulator
+from cockbook.config import (
+    AggregationConfig,
+    AppConfig,
+    BinanceUsdmConfig,
+    LongTierConfig,
+    UiConfig,
+)
+from cockbook.core.aggregation import ColumnDeltaEncoder, HeatmapAggregator, LongTermAccumulator
 from cockbook.core.eventbus import EventBus, Overflow
 from cockbook.core.events import (
     BookDelta,
@@ -37,6 +43,7 @@ from cockbook.core.events import (
     Ticker24h,
     Trade,
 )
+from cockbook.core.venue import split_key, venue_key
 from cockbook.server.bridge import Bridge
 from cockbook.server.longterm_archive import LongTermArchive
 from cockbook.server.protocol import (
@@ -102,6 +109,7 @@ class MarketFeed:
         self.mode = mode
         self.cfg = agg_cfg
         self.aggs: dict[str, HeatmapAggregator] = {}
+        self._encoders: dict[str, ColumnDeltaEncoder] = {}
         self._hello_sent: set[str] = set()
         self._candles: dict[str, dict[int, CandleBar]] = {}
         self._candle_dirty: dict[str, tuple[CandleBar, bool]] = {}
@@ -130,6 +138,7 @@ class MarketFeed:
                 bucket_bps=self.cfg.bucket_bps,
                 memory_max_age_s=self.cfg.memory_max_age_s,
             )
+            self._encoders[sym] = ColumnDeltaEncoder(self.cfg.keyframe_every_columns)
             self._candles[sym] = {}
             self._resyncs[sym] = 0
             self._long[sym] = {t.name: LongTermAccumulator(t.factor) for t in self.cfg.long_tiers}
@@ -151,10 +160,12 @@ class MarketFeed:
     def from_config(cls, cfg: AppConfig, bus: EventBus, bridge: Bridge) -> MarketFeed:
         symbols: dict[str, int | None] = {}
         labels: dict[str, str] = {}
+        binance = [ex for ex in cfg.exchanges if ex.enabled and isinstance(ex, BinanceUsdmConfig)]
         for ex in cfg.exchanges:
             if ex.enabled:
                 for s in ex.symbols:
-                    symbols[s.symbol.upper()] = s.bucket_ticks
+                    key = venue_key(ex.name, s.symbol.upper())
+                    symbols[key] = s.bucket_ticks
                     if s.label:
                         labels[s.symbol.upper()] = s.label
         return cls(
@@ -165,39 +176,41 @@ class MarketFeed:
             bridge,
             labels=labels,
             archive_dir=cfg.recorder.data_dir,
-            klines=next((BinanceKlines(ex) for ex in cfg.exchanges if ex.enabled), None),
+            klines=BinanceKlines(binance[0]) if binance else None,
         )
 
     async def _on_chart_event(self, e: Event) -> None:
+        k = venue_key(e.exchange, e.symbol)  # Coin + Börse
         if isinstance(e, Liquidation):
             # Gesamtmarkt: Liste aller Coins; Marker nur für eigene Symbole (Aggregator)
-            self.bridge.publish_stat(e.symbol, "liq", encode_liquidation(e))
-            for acc in self._long.get(e.symbol, {}).values():
+            self.bridge.publish_stat(k, "liq", encode_liquidation(e))
+            for acc in self._long.get(k, {}).values():
                 acc.add_liquidation(e.side, float(e.qty * e.price))
         if isinstance(e, CandleHistory) and e.interval == "1d":
-            self.bridge.publish_stat(e.symbol, "d1", encode_bars("d1", e.symbol, list(e.bars)))
+            self.bridge.publish_stat(k, "d1", encode_bars("d1", k, list(e.bars)))
             return
-        agg = self.aggs.get(e.symbol)
+        agg = self.aggs.get(k)
         if agg is None:
             if not isinstance(e, InstrumentInfo):
                 return
-            agg = self._add_symbol(e.symbol)
+            agg = self._add_symbol(k)
         if isinstance(e, CandleHistory):
-            store = self._candles[e.symbol]
+            store = self._candles[k]
             for b in e.bars:
                 store[b.open_time_ns] = b
-            self._publish_candle_history(e.symbol)
+            self._publish_candle_history(k)
             return
         if isinstance(e, Candle):
             if e.interval == "1m":
-                self._candles[e.symbol][e.bar.open_time_ns] = e.bar
-                self._candle_dirty[e.symbol] = (e.bar, e.closed)
+                self._candles[k][e.bar.open_time_ns] = e.bar
+                self._candle_dirty[k] = (e.bar, e.closed)
             return
         agg.on_event(e)
         if isinstance(e, InstrumentInfo):
             self.bridge.register_symbol(
-                e.symbol,
+                k,
                 exchange=e.exchange,
+                base=e.symbol,
                 tick_size=str(e.tick_size),
                 kind=e.kind,
                 category=e.category,
@@ -206,15 +219,15 @@ class MarketFeed:
             )
         elif isinstance(e, BookSyncStatus):
             if not e.synced:
-                self._resyncs[e.symbol] += 1
+                self._resyncs[k] += 1
             self.bridge.set_status(
-                e.symbol,
-                encode_control("status", symbol=e.symbol, synced=e.synced, reason=e.reason),
+                k,
+                encode_control("status", symbol=k, synced=e.synced, reason=e.reason),
             )
             self.bridge.publish_stat(
-                e.symbol,
+                k,
                 "sync",
-                encode_sync(e.symbol, e.ts_ns, e.synced, self._resyncs[e.symbol], e.reason),
+                encode_sync(k, e.ts_ns, e.synced, self._resyncs[k], e.reason),
             )
 
     def _publish_candle_history(self, symbol: str) -> None:
@@ -236,12 +249,13 @@ class MarketFeed:
         if isinstance(e, MarketSession):  # gilt für einen ganzen Markt, nicht ein Symbol
             self.bridge.publish_stat(e.symbol, "sess", encode_session(e))
             return
-        if e.symbol not in self.aggs:
+        k = venue_key(e.exchange, e.symbol)
+        if k not in self.aggs:
             return
-        encoded = encode_stat(e)
+        encoded = encode_stat(e, k)
         if encoded is not None:
             kind, frame = encoded
-            self.bridge.publish_stat(e.symbol, kind, frame)
+            self.bridge.publish_stat(k, kind, frame)
 
     def _send_hello(self, symbol: str, agg: HeatmapAggregator) -> None:
         assert agg.instrument is not None
@@ -261,6 +275,8 @@ class MarketFeed:
             ),
         )
         self._hello_sent.add(symbol)
+        # neue Skalierung -> Historie ist leer, die nächste Spalte muss ein Schlüsselbild sein
+        self._encoders[symbol] = ColumnDeltaEncoder(self.cfg.keyframe_every_columns)
 
     def _publish_tier(
         self, sym: str, agg: HeatmapAggregator, tier: LongTierConfig, ts_ns: int
@@ -274,7 +290,8 @@ class MarketFeed:
         self.bridge.publish_tier(sym, tier.name, frame)
         archive = self._archive(agg.instrument.exchange, tier)
         if archive is not None and (col.synced or ll or lsh):
-            archive.append(sym, ts_ns // 1_000_000, frame)
+            # Pfad: <börse>/<reines Symbol> (kein ":" – unter Windows ungültig)
+            archive.append(agg.instrument.symbol, ts_ns // 1_000_000, frame)
 
     async def long_request(self, symbol: str, tier_name: str, what: str) -> list[str | bytes]:
         """Daten für die Langzeit-Ansicht: ``what="all"`` = hello + gespeicherte Spalten +
@@ -288,13 +305,13 @@ class MarketFeed:
             agg = self.aggs.get(symbol)
             inst = agg.instrument if agg is not None else None
             bt = agg.bucket_ticks if agg is not None else None
-            exchange = inst.exchange if inst is not None else "binance_usdm"
+            exchange, raw = split_key(symbol)
             frames: list[bytes] = []
             archive = self._archive(exchange, tier)
             if archive is not None:
                 now_ms = time.time_ns() // 1_000_000
-                frames = await asyncio.to_thread(archive.load, symbol, now_ms, bt, tier.factor)
-                await asyncio.to_thread(archive.prune, symbol, now_ms)
+                frames = await asyncio.to_thread(archive.load, raw, now_ms, bt, tier.factor)
+                await asyncio.to_thread(archive.prune, raw, now_ms)
                 if bt is None and frames:
                     bt = int(msgpack.unpackb(frames[-1])["bt"])
             out.append(
@@ -316,7 +333,8 @@ class MarketFeed:
         if self.klines is not None:
             minutes = _interval_minutes(tier.candle_interval)
             limit = min(1500, int(span_ms / 60_000 / minutes) + 2) if minutes else 500
-            bars = await self.klines.get(symbol, tier.candle_interval, limit)
+            # Kerzen kommen von Binance (Preise der Börsen liegen dicht beieinander)
+            bars = await self.klines.get(split_key(symbol)[1], tier.candle_interval, limit)
             out.append(encode_klines(symbol, tier.name, tier.candle_interval, bars))
         if what == "all":
             out.append(encode_control("long_ready", symbol=symbol, tier=tier.name))
@@ -361,10 +379,10 @@ class MarketFeed:
                 if sym not in self._hello_sent:
                     self._send_hello(sym, agg)
                 t0 = time.perf_counter_ns()
-                col = agg.make_column(boundary)
+                col = self._encoders[sym].encode(agg.make_column(boundary))
                 frames = encode_column(sym, col)
                 dt = time.perf_counter_ns() - t0
-                self.bridge.publish(sym, frames, boundary // 1_000_000)
+                self.bridge.publish(sym, frames, boundary // 1_000_000, keyframe=col.keyframe)
                 # Langzeit-Stufen: Buch abtasten, am Intervallende Spalte abschließen
                 bb, ba = col.best_bid, col.best_ask
                 for tier, s_ns, i_ns in tier_ns:

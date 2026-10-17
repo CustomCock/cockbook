@@ -375,7 +375,8 @@ async def test_bridge_since_sends_only_missing_history() -> None:
                         got.append(msgpack.unpackb(msg.data)["ts"])
                     if got[-1:] == [3] and got.count(3) == 2:
                         break
-        assert got == [1, 2, 3, 3]  # erst Standard-Abo (alles), dann nur das Fehlende
+        # erst Standard-Abo (alles), dann ab dem letzten Schlüsselbild <= since
+        assert got == [1, 2, 3, 2, 3]
     finally:
         await bridge.stop()
 

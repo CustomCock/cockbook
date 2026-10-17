@@ -45,8 +45,8 @@ class _Channel:
         self.status: str | None = None
         # Zustand, den jeder neue Abonnent einmal bekommt (z. B. 1m-Kerzen-Historie)
         self.static: dict[str, bytes] = {}
-        # eine Gruppe = alle Frames eines Intervalls (mit Zeitstempel in ms)
-        self.history: deque[tuple[int, list[bytes]]] = deque(maxlen=max(history, 1))
+        # eine Gruppe = alle Frames eines Intervalls (Zeitstempel in ms, Schlüsselbild?)
+        self.history: deque[tuple[int, list[bytes], bool]] = deque(maxlen=max(history, 1))
 
 
 class _Client:
@@ -148,9 +148,13 @@ class Bridge:
         ch.status = status
         self._send_channel(symbol, status)
 
-    def publish(self, symbol: str, frames: list[bytes], ts_ms: int = 0) -> None:
+    def publish(
+        self, symbol: str, frames: list[bytes], ts_ms: int = 0, *, keyframe: bool = True
+    ) -> None:
+        """``keyframe=False``: Die Spalte enthält nur Änderungen zur vorigen – ein Client
+        braucht vorher das letzte Schlüsselbild (siehe ``_subscribe``)."""
         if self.cfg.history_columns:
-            self._channel(symbol).history.append((ts_ms, frames))
+            self._channel(symbol).history.append((ts_ms, frames, keyframe))
         for f in frames:
             self._send_channel(symbol, f)
 
@@ -211,10 +215,20 @@ class Bridge:
             client.put(ch.status)
         for frame in ch.static.values():
             client.put(frame)
-        for ts, group in ch.history:
-            if since is None or ts > since:
-                for f in group:
-                    client.put(f)
+        # Ab dem letzten Schlüsselbild <= since (bzw. dem ältesten): Änderungs-Spalten ohne
+        # ihr Schlüsselbild wären wertlos. Spalten <= since verwirft das Frontend als schon
+        # vorhanden, baut daraus aber seinen Bucket-Zustand wieder auf.
+        hist = list(ch.history)
+        start = next((i for i, (_, _, key) in enumerate(hist) if key), len(hist))
+        if since is not None:
+            for i in range(start, len(hist)):
+                if hist[i][0] > since:
+                    break
+                if hist[i][2]:
+                    start = i
+        for _, group, _ in hist[start:]:
+            for f in group:
+                client.put(f)
 
     # --- Server -------------------------------------------------------------------------
 

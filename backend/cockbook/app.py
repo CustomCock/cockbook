@@ -13,15 +13,28 @@ from cockbook.adapters.binance import (
     BinanceUsdmAdapter,
 )
 from cockbook.adapters.binance_history import BinanceDailyHistory
+from cockbook.adapters.bitunix import BitunixAdapter, BitunixMarketStats
 from cockbook.adapters.common import MarketDataSource
-from cockbook.config import AppConfig, BinanceUsdmConfig
+from cockbook.config import AppConfig, BinanceUsdmConfig, BitunixConfig
 from cockbook.core.eventbus import EventBus
+from cockbook.core.venue import COMBINED, DEFAULT_EXCHANGE, split_key, venue_key
 
 log = logging.getLogger(__name__)
 
 
+def _binance(cfg: AppConfig) -> list[BinanceUsdmConfig]:
+    return [ex for ex in cfg.exchanges if ex.enabled and isinstance(ex, BinanceUsdmConfig)]
+
+
+def _bitunix(cfg: AppConfig) -> list[BitunixConfig]:
+    return [ex for ex in cfg.exchanges if ex.enabled and isinstance(ex, BitunixConfig)]
+
+
 def configured_symbols(cfg: AppConfig) -> list[str]:
-    return [s.symbol.upper() for ex in cfg.exchanges if ex.enabled for s in ex.symbols]
+    """Reihenfolge im Coin-Menü: Binance-Coins aus der Config, dann feste Bitunix-Coins."""
+    keys = [s.symbol.upper() for ex in _binance(cfg) for s in ex.symbols]
+    keys += [venue_key("bitunix", s.symbol.upper()) for ex in _bitunix(cfg) for s in ex.symbols]
+    return keys
 
 
 def build_sources(
@@ -37,23 +50,37 @@ def build_sources(
     Tageskerzen. Symbol-Adapter stehen immer vorne in der Liste."""
     sources: list[MarketDataSource] = []
     extra: list[MarketDataSource] = []
-    for ex in cfg.exchanges:
-        if not ex.enabled:
-            continue
+    only = split_key(only_symbol.upper()) if only_symbol else None
+    for ex in _binance(cfg):
         for s in ex.symbols:
-            if only_symbol is not None:
-                if s.symbol.upper() == only_symbol.upper():
+            if only is not None:
+                if only == (DEFAULT_EXCHANGE, s.symbol.upper()):
                     sources.append(BinanceUsdmAdapter(ex, s.symbol, bus))
             elif s.always_on or not always_on_only:
                 sources.append(BinanceUsdmAdapter(ex, s.symbol, bus))
         if market_wide:
             wanted = [s.symbol for s in ex.symbols]
-            if only_symbol is not None:
-                wanted = [only_symbol.upper()]
-            extra.append(BinanceMarketStats(ex, wanted, bus, discover=only_symbol is None))
+            if only is not None:
+                wanted = [only[1]]
+            extra.append(BinanceMarketStats(ex, wanted, bus, discover=only is None))
             if ex.liquidations_all_market:
                 extra.append(BinanceLiquidationStream(ex, bus))
-    symbols = configured_symbols(cfg) if only_symbol is None else [only_symbol.upper()]
+    for bx in _bitunix(cfg):
+        for s in bx.symbols:
+            if only is not None:
+                if only == ("bitunix", s.symbol.upper()):
+                    sources.append(BitunixAdapter(bx, s.symbol, bus))
+            elif s.always_on or not always_on_only:
+                sources.append(BitunixAdapter(bx, s.symbol, bus))
+        if market_wide and only is None:
+            cats = {k: v for ex in _binance(cfg) for k, v in ex.tradfi_categories.items()}
+            mirrored = [s.symbol.upper() for ex in _binance(cfg) for s in ex.symbols]
+            mirrored += [s.symbol.upper() for s in bx.symbols]
+            extra.append(BitunixMarketStats(bx, None if bx.all_symbols else mirrored, bus, cats))
+    # Tageskerzen (ATH, Zyklen) nur einmal je Coin – von Binance
+    symbols = [s.symbol.upper() for ex in _binance(cfg) for s in ex.symbols]
+    if only is not None:
+        symbols = [only[1]]
     if market_wide and cfg.history.enabled and symbols:
         extra.append(BinanceDailyHistory(cfg.history, symbols, cfg.recorder.data_dir, bus))
     if not sources and only_symbol is not None:
@@ -83,33 +110,48 @@ class SourceManager:
         self.active: set[str] = set()
         self._adapters: dict[str, tuple[MarketDataSource, asyncio.Task[None]]] = {}
 
-    def _exchange_for(self, symbol: str) -> BinanceUsdmConfig | None:
-        for ex in self.cfg.exchanges:
-            if ex.enabled and any(s.symbol.upper() == symbol for s in ex.symbols):
-                return ex
-        # automatisch gefundene TradFi-Kontrakte
-        for src in self.sources:
-            if isinstance(src, BinanceMarketStats) and symbol in src.available:
-                return src.cfg
+    def _adapter_for(self, key: str) -> MarketDataSource | None:
+        """Passenden Adapter für Coin+Börse bauen; None = unbekannt/nicht handelbar."""
+        exchange, sym = split_key(key)
+        if exchange == DEFAULT_EXCHANGE:
+            for ex in _binance(self.cfg):
+                if any(s.symbol.upper() == sym for s in ex.symbols):
+                    return BinanceUsdmAdapter(ex, sym, self.bus)
+            # automatisch gefundene TradFi-Kontrakte
+            for src in self.sources:
+                if isinstance(src, BinanceMarketStats) and sym in src.available:
+                    return BinanceUsdmAdapter(src.cfg, sym, self.bus)
+        elif exchange == "bitunix":
+            for bx in _bitunix(self.cfg):
+                if any(s.symbol.upper() == sym for s in bx.symbols):
+                    return BitunixAdapter(bx, sym, self.bus)
+            for src in self.sources:
+                if isinstance(src, BitunixMarketStats) and sym in src.available:
+                    return BitunixAdapter(src.cfg, sym, self.bus)
         return None
 
-    def activate(self, symbol: str) -> None:
-        """Orderbuch für ``symbol`` starten (idempotent; unbekannte Symbole ignorieren)."""
-        symbol = symbol.upper()
-        if self._tg is None or self._stopping or symbol in self._adapters:
+    def activate(self, key: str) -> None:
+        """Orderbuch für Coin+Börse starten (idempotent; unbekannte ignorieren).
+        ``MULTI:BTCUSDT`` startet die Bücher aller Börsen dieses Coins."""
+        key = key.upper()
+        exchange, sym = split_key(key)
+        if exchange == COMBINED:
+            for k in (sym, venue_key("bitunix", sym)):
+                self.activate(k)
             return
-        if self._only is not None and symbol != self._only:
+        if self._tg is None or self._stopping or key in self._adapters:
             return
-        ex = self._exchange_for(symbol)
-        if ex is None:
+        if self._only is not None and key != self._only:
             return
-        adapter = BinanceUsdmAdapter(ex, symbol, self.bus)
-        task = self._tg.create_task(self._guard(adapter), name=f"source:{symbol}")
-        self._adapters[symbol] = (adapter, task)
-        self.active.add(symbol)
-        log.info("orderbook activated", extra={"symbol": symbol})
+        adapter = self._adapter_for(key)
+        if adapter is None:
+            return
+        task = self._tg.create_task(self._guard(adapter, key), name=f"source:{key}")
+        self._adapters[key] = (adapter, task)
+        self.active.add(key)
+        log.info("orderbook activated", extra={"symbol": key})
 
-    async def _guard(self, src: MarketDataSource) -> None:
+    async def _guard(self, src: MarketDataSource, key: str | None = None) -> None:
         """Ein Adapter, der dauerhaft scheitert (z. B. Symbol delistet), darf weder die
         anderen Coins noch das Backend mitreißen. Nach einem Fehler darf er per erneutem
         Abo wieder gestartet werden."""
@@ -117,22 +159,24 @@ class SourceManager:
             await src.run()
         except Exception:
             log.exception("source failed", extra={"source": src.name})
-            sym = src.name.split(":")[-1]
-            self._adapters.pop(sym, None)
-            self.active.discard(sym)
+            if key is not None:
+                self._adapters.pop(key, None)
+                self.active.discard(key)
 
     def _initial_symbols(self) -> list[str]:
         if self._only is not None:
             return [self._only]
-        return [
-            s.symbol.upper() for ex in self.cfg.exchanges if ex.enabled for s in ex.symbols
+        keys = [s.symbol.upper() for ex in _binance(self.cfg) for s in ex.symbols if s.always_on]
+        keys += [
+            venue_key("bitunix", s.symbol.upper()) for bx in _bitunix(self.cfg) for s in bx.symbols
             if s.always_on
         ]  # fmt: skip
+        return keys
 
     def _market_sources(self) -> list[MarketDataSource]:
         """Gesamtmarkt-Quellen (Kennzahlen, Liquidationen, Tageskerzen) – keine Orderbücher."""
         all_sources = build_sources(self.cfg, self.bus, only_symbol=self._only, always_on_only=True)
-        return [s for s in all_sources if not isinstance(s, BinanceUsdmAdapter)]
+        return [s for s in all_sources if not isinstance(s, BinanceUsdmAdapter | BitunixAdapter)]
 
     async def _history_for_discovered(self, stop: asyncio.Event) -> None:
         """Tageskerzen auch für automatisch gefundene TradFi-Kontrakte laden."""

@@ -49,7 +49,19 @@ export interface Symbols {
 
 /** Chart-Frames (nur für das abonnierte Symbol). */
 export type ChartFrame =
-  | { t: "col"; sym: string; ts: number; s: boolean; b: number; c?: number | null; q: Uint8Array; i?: Uint8Array }
+  | {
+      t: "col";
+      sym: string;
+      ts: number;
+      s: boolean;
+      b: number;
+      c?: number | null;
+      /** Schlüsselbild (vollständig) oder nur Änderungen; `n` = laufende Nummer */
+      k?: boolean;
+      n?: number;
+      q: Uint8Array;
+      i?: Uint8Array;
+    }
   | { t: "bbo"; sym: string; ts: number; bb: number | null; ba: number | null }
   | { t: "tr"; sym: string; ts: number; x: [number, number, number, number][] }
   | { t: "lq"; sym: string; ts: number; x: [number, number, number][] }

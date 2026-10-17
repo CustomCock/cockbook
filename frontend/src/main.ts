@@ -4,6 +4,7 @@ import { aggregate, buildCandles, CandleSeries, RRectBuilder, type CandleMinutes
 import { computeRange, type ScaleRange, type ScaleSettings } from "./colorscale";
 import { showTokenPrompt, takeTokenFromHash, wsUrlWithToken } from "./backend";
 import { CoinPicker } from "./coinpicker";
+import { ColumnAssembler } from "./columns";
 import { CYCLE_PRESETS } from "./cycles";
 import { buildDomRows, DOM_W, drawDom } from "./dom";
 import { loadFeatures, saveFeatures } from "./features";
@@ -86,6 +87,8 @@ let inst: Instrument | null = null;
 let store: HeatmapStore | null = null;
 /** Grobe Preis-Ebene: dieselben Spalten, je MIP_FACTOR Buckets zusammengefasst (Maximum) */
 let mip: HeatmapStore | null = null;
+// Bucket-Zustand aus Schlüsselbildern + Änderungs-Spalten (gehört zu store)
+let assembler = new ColumnAssembler();
 let view: View = { yLo: 0, yHi: 100, colWidth: 2, offset: 0, autoCenter: true };
 let viewInitialized = false;
 let range: ScaleRange | null = null;
@@ -99,6 +102,7 @@ interface SymbolState {
   inst: Instrument | null;
   store: HeatmapStore | null;
   mip: HeatmapStore | null;
+  assembler: ColumnAssembler;
   candles: CandleSeries;
   view: View;
   viewInitialized: boolean;
@@ -326,7 +330,7 @@ function setBadge(id: string, text: string, cls: string): void {
 function rememberCurrent(): void {
   if (!currentSymbol || !store) return;
   cache.delete(currentSymbol);
-  cache.set(currentSymbol, { hello, inst, store, mip, candles, view, viewInitialized });
+  cache.set(currentSymbol, { hello, inst, store, mip, assembler, candles, view, viewInitialized });
   while (cache.size > CACHE_SYMBOLS) cache.delete(cache.keys().next().value!);
 }
 
@@ -387,7 +391,7 @@ function selectSymbol(sym: string): void {
   range = null;
   if (cached?.store) {
     // Tab-Wechsel zurück: Heatmap liegt noch im Speicher, nur der Rest kommt nach
-    ({ hello, inst, mip, candles, viewInitialized } = cached);
+    ({ hello, inst, mip, assembler, candles, viewInitialized } = cached);
     store = cached.store;
     view = { ...cached.view, colWidth: view.colWidth };
     heatmap.attach(cached.store);
@@ -399,6 +403,7 @@ function selectSymbol(sym: string): void {
     inst = null;
     store = null;
     mip = null;
+    assembler = new ColumnAssembler();
     candles = new CandleSeries();
     viewInitialized = false;
     view = { ...view, offset: 0, autoCenter: true };
@@ -468,6 +473,7 @@ const conn = connect(
           h.interval_ms,
         );
         heatmap.attach(store);
+        assembler = new ColumnAssembler();
         mip = new HeatmapStore(
           Math.min(MAX_HISTORY_COLS, maxTex),
           rowsFor(h.half_range_buckets / MIP_FACTOR, maxTex, 2048),
@@ -506,13 +512,19 @@ const conn = connect(
       if (!store || !hello) return;
       dataVersion++;
       if (f.t === "col") {
-        const values = toFloat32(f.q);
-        const idx = f.i ? toInt32(f.i) : null;
+        // Auch schon vorhandene Spalten (Historie nach Reconnect) laufen durch den
+        // Assembler: Der Server beginnt beim Schlüsselbild, der Bucket-Zustand entsteht neu.
+        const col = assembler.apply(f.s, f.k, f.n, f.b, toFloat32(f.q), f.i ? toInt32(f.i) : null);
+        if (store.latestTs !== null && f.ts <= store.latestTs) return; // schon vorhanden
         const center = f.c ?? null;
-        if (store.pushColumn(f.ts, f.s, f.b, values, idx, center) < 0) return; // schon vorhanden
+        // col === null bei Lücke: als "nicht synchron" zeigen statt eine falsche Heatmap
+        const synced = col !== null;
+        const empty = { base: 0, values: new Float32Array(0), idx: new Int32Array(0) };
+        const c = col ?? empty;
+        store.pushColumn(f.ts, synced, c.base, c.values, c.idx, center);
         if (mip) {
-          const d = downsample(f.b, values, idx, MIP_FACTOR);
-          mip.pushColumn(f.ts, f.s, d.base, d.values, d.idx, center === null ? null : Math.floor(center / MIP_FACTOR));
+          const d = synced ? downsample(c.base, c.values, c.idx, MIP_FACTOR) : empty;
+          mip.pushColumn(f.ts, synced, d.base, d.values, d.idx, center === null ? null : Math.floor(center / MIP_FACTOR));
         }
         columnsReceived++;
         // Beim Zurückscrollen bleibt der betrachtete Zeitpunkt stehen

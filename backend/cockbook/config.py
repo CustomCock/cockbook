@@ -103,7 +103,30 @@ class BinanceUsdmConfig(_Model):
     reconnect: ReconnectConfig = Field(default_factory=ReconnectConfig)
 
 
-type ExchangeConfig = BinanceUsdmConfig
+class BitunixConfig(_Model):
+    """Bitunix-Futures (USDT-M) als zweite Börse für Multibook.
+
+    Doku (gelesen am 2026-10-17): https://www.bitunix.com/api-docs/futures/common/introduction.html
+    Besonderheit: ``depth_books`` liefert in jeder Nachricht das *ganze* Buch (bei BTC
+    ~25 000 Level, ~500 KB, ~3/s). Kein Sequenzproblem, aber viel Datenvolumen – darum
+    Orderbücher nur für ``always_on``-Coins und bei Auswahl, Preise für alle über ``tickers``.
+    """
+
+    name: Literal["bitunix"]
+    enabled: bool = True
+    # Alle handelbaren Bitunix-Paare ins Coin-Menü (sonst nur die Coins der anderen Börsen
+    # aus der Config + ``symbols``). Orderbuch immer erst bei Auswahl bzw. ``always_on``.
+    all_symbols: bool = True
+    # Zusätzlich/fest: hier eingetragene Symbole (always_on wirkt wie bei Binance)
+    symbols: list[SymbolConfig] = Field(default_factory=list)
+    rest_url: str = "https://fapi.bitunix.com"
+    ws_url: str = "wss://fapi.bitunix.com/public/"
+    # Bitunix erlaubt max. 5 Nachrichten/s vom Client (auch Pings) – Ping alle n Sekunden
+    ping_interval_s: Annotated[float, Field(ge=5)] = 20.0
+    reconnect: ReconnectConfig = Field(default_factory=ReconnectConfig)
+
+
+type ExchangeConfig = Annotated[BinanceUsdmConfig | BitunixConfig, Field(discriminator="name")]
 
 
 class LongTierConfig(_Model):
@@ -136,6 +159,8 @@ def _default_tiers() -> list[LongTierConfig]:
 
 class AggregationConfig(_Model):
     interval_ms: Annotated[int, Field(ge=10)] = 100  # eine Heatmap-Spalte
+    # Alle n Spalten eine vollständige Spalte, dazwischen nur Änderungen (50 x 100 ms = 5 s)
+    keyframe_every_columns: Annotated[int, Field(ge=1)] = 50
     # Preis-Bucket automatisch je Symbol: Bucket ~ Mid * bucket_bps / 10000, auf ein
     # "rundes" Vielfaches der Tick-Größe gerundet (1, 2, 5, 10, 20, …), mindestens 1 Tick.
     # Damit sehen BTC (Tick 0.10) und XRP (Tick 0.0001) gleich "dicht" aus.

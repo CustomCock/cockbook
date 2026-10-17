@@ -106,6 +106,8 @@ def encode_column(symbol: str, col: HeatmapColumn) -> list[bytes]:
                 "s": col.synced,
                 "b": col.base_bucket,
                 "c": col.center,
+                "k": col.keyframe,
+                "n": col.seq,
                 **_values(col),
             }
         ),
@@ -202,9 +204,10 @@ def encode_session(e: MarketSession) -> bytes:
     )
 
 
-def encode_stat(e: Event) -> tuple[str, bytes] | None:
-    """Kennzahl-Event -> (Art, Frame). None, wenn das Event keine Kennzahl ist."""
-    base: dict[str, Any] = {"sym": e.symbol, "ts": _ms(e.ts_ns)}
+def encode_stat(e: Event, key: str | None = None) -> tuple[str, bytes] | None:
+    """Kennzahl-Event -> (Art, Frame). None, wenn das Event keine Kennzahl ist.
+    ``key``: Coin+Börse (z. B. "BITUNIX:BTCUSDT"), Standard = reines Symbol."""
+    base: dict[str, Any] = {"sym": key or e.symbol, "ts": _ms(e.ts_ns)}
     if isinstance(e, MarkPrice):
         kind = "mark"
         base |= {
