@@ -152,8 +152,12 @@ def encode_long_column(
     factor: int,
     liq_long: float = 0.0,
     liq_short: float = 0.0,
+    *,
+    provisional: bool = False,
 ) -> bytes:
-    """Spalte einer Langzeit-Stufe. ``bt``/``f``: feine Bucket-Größe in Ticks und Faktor –
+    """Spalte einer Langzeit-Stufe. ``provisional``: laufendes Intervall (``p``), wird
+    durch die endgültige Spalte mit gleichem Zeitstempel ersetzt.
+    ``bt``/``f``: feine Bucket-Größe in Ticks und Faktor –
     gespeicherte Spalten werden nach einem Neustart nur bei gleicher Skalierung genutzt.
     ``ll``/``lsh``: liquidierte Longs/Shorts im Intervall (USDT)."""
     return _pack(
@@ -171,6 +175,7 @@ def encode_long_column(
             "ba": col.best_ask,
             "ll": round(liq_long, 2),
             "lsh": round(liq_short, 2),
+            "p": provisional,
         }
     )
 

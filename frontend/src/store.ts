@@ -133,6 +133,27 @@ export class HeatmapStore {
     return idxRow;
   }
 
+  /**
+   * Wie `pushColumn`, ersetzt aber die neueste Spalte, wenn sie denselben Zeitstempel hat –
+   * für die laufende Langzeit-Spalte, die bis zum Intervallende mehrmals aktualisiert wird.
+   * Rückgabe: Index, `replaced` = bestehende Spalte überschrieben.
+   */
+  upsertColumn(
+    tsMs: number,
+    synced: boolean,
+    base: number,
+    values: Float32Array,
+    idx: Int32Array | null = null,
+    center: number | null = null,
+  ): { index: number; replaced: boolean } {
+    const replaced = this.count > 0 && this.ts[this.latest] === tsMs;
+    if (replaced) {
+      this.head = (this.head - 1 + this.cols) % this.cols;
+      this.count--;
+    }
+    return { index: this.pushColumn(tsMs, synced, base, values, idx, center), replaced };
+  }
+
   private fillGap(tsMs: number): void {
     const missing = Math.round((tsMs - this.ts[this.latest]!) / this.intervalMs) - 1;
     if (missing <= 0) return;

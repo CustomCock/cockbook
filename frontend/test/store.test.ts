@@ -117,3 +117,16 @@ describe("HeatmapStore", () => {
     expect([...d.values]).toEqual([4, 2, 8]);
   });
 });
+
+describe("upsertColumn", () => {
+  it("ersetzt die neueste Spalte bei gleichem Zeitstempel", () => {
+    const s = new HeatmapStore(4, 8, 1000);
+    s.pushColumn(1000, true, 0, Float32Array.from([1]), Int32Array.from([0]), 0);
+    expect(s.upsertColumn(2000, true, 0, Float32Array.from([2]), Int32Array.from([0]), 0).replaced).toBe(false);
+    const r = s.upsertColumn(2000, true, 0, Float32Array.from([5]), Int32Array.from([0]), 0);
+    expect(r.replaced).toBe(true);
+    expect(s.count).toBe(2);
+    expect(s.valueAt(0, 0)).toBe(5);
+    expect(s.valueAt(1, 0)).toBe(1);
+  });
+});

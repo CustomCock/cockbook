@@ -11,15 +11,18 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from decimal import Decimal
 from pathlib import Path
 
 import msgpack
 
 from cockbook.adapters.binance import BinanceKlines
+from cockbook.adapters.bitunix import BitunixKlines
 from cockbook.config import (
     AggregationConfig,
     AppConfig,
     BinanceUsdmConfig,
+    BitunixConfig,
     LongTierConfig,
     UiConfig,
 )
@@ -101,6 +104,7 @@ class MarketFeed:
         labels: dict[str, str] | None = None,
         archive_dir: Path | None = None,
         klines: BinanceKlines | None = None,
+        bitunix_klines: BitunixKlines | None = None,
     ) -> None:
         """``symbols``: Symbol -> feste Bucket-Größe in Ticks oder None (automatisch).
 
@@ -134,6 +138,7 @@ class MarketFeed:
         self._archive_dir = archive_dir if agg_cfg.long_persist else None
         self._archives: dict[tuple[str, str], LongTermArchive] = {}
         self.klines = klines
+        self.bitunix_klines = bitunix_klines
         # Messwerte für die Performance-Auswertung
         self.columns = 0
         self.build_ns_total = 0
@@ -173,6 +178,7 @@ class MarketFeed:
         symbols: dict[str, int | None] = {}
         labels: dict[str, str] = {}
         binance = [ex for ex in cfg.exchanges if ex.enabled and isinstance(ex, BinanceUsdmConfig)]
+        bitunix = [ex for ex in cfg.exchanges if ex.enabled and isinstance(ex, BitunixConfig)]
         for ex in cfg.exchanges:
             if ex.enabled:
                 for s in ex.symbols:
@@ -189,6 +195,7 @@ class MarketFeed:
             labels=labels,
             archive_dir=cfg.recorder.data_dir,
             klines=BinanceKlines(binance[0]) if binance else None,
+            bitunix_klines=BitunixKlines(bitunix[0]) if bitunix else None,
         )
 
     async def _on_chart_event(self, e: Event) -> None:
@@ -366,6 +373,44 @@ class MarketFeed:
             # Pfad: <börse>/<reines Symbol> (kein ":" – unter Windows ungültig)
             archive.append(agg.instrument.symbol, ts_ns // 1_000_000, frame)
 
+    def _provisional_frame(self, sym: str, tier: LongTierConfig, now_ns: int) -> bytes | None:
+        """Laufende (noch nicht abgeschlossene) Spalte einer Stufe, Zeitstempel = Ende des
+        Intervalls. Das Frontend ersetzt sie, bis die endgültige Spalte mit demselben
+        Zeitstempel kommt. Wird nicht archiviert."""
+        agg = self.aggs.get(sym)
+        acc = self._long.get(sym, {}).get(tier.name)
+        if agg is None or acc is None or agg.bucket_ticks is None or not acc.has_samples:
+            return None
+        i_ns = tier.interval_s * 1_000_000_000
+        end = (now_ns // i_ns + 1) * i_ns
+        ll, lsh = acc.liquidations
+        return encode_long_column(
+            sym, tier.name, acc.peek(end), agg.bucket_ticks, tier.factor, ll, lsh, provisional=True
+        )
+
+    def _with_forming_bar(self, sym: str, bars: list[CandleBar], minutes: int) -> list[CandleBar]:
+        """Bitunix liefert per REST nur abgeschlossene Kerzen. Die laufende baut sich aus
+        den 1m-Kerzen zusammen, die der Feed für die Live-Ansicht ohnehin hält."""
+        ones = self._candles.get(sym)
+        if not ones or not minutes:
+            return bars
+        iv = minutes * 60_000_000_000
+        start = (bars[-1].open_time_ns + iv) if bars else max(ones) // iv * iv
+        part = [ones[t] for t in sorted(ones) if t >= start]
+        if not part:
+            return bars
+        forming = CandleBar(
+            part[-1].open_time_ns // iv * iv,
+            part[0].open,
+            max(b.high for b in part),
+            min(b.low for b in part),
+            part[-1].close,
+            sum((b.volume for b in part), Decimal(0)),
+        )
+        if forming.open_time_ns != start:
+            return bars  # Lücke zwischen REST und Live-Kerzen: lieber nichts erfinden
+        return [*bars, forming]
+
     async def long_request(self, symbol: str, tier_name: str, what: str) -> list[str | bytes]:
         """Daten für die Langzeit-Ansicht: ``what="all"`` = hello + gespeicherte Spalten +
         Kerzen + ready; ``"klines"`` = nur Kerzen (minütliche Aktualisierung)."""
@@ -403,11 +448,19 @@ class MarketFeed:
                 )
             )
             out.extend(frames)
-        if self.klines is not None:
+            # Laufende Spalte gleich mitschicken: Beim ersten Öffnen ist sonst bis zum Ende
+            # des Intervalls (1M: 30 min) gar keine Heatmap zu sehen
+            live = self._provisional_frame(symbol, tier, time.time_ns())
+            if live is not None:
+                out.append(live)
+        exchange, raw = split_key(symbol)
+        source = self.bitunix_klines if exchange == "bitunix" else self.klines
+        if source is not None:
             minutes = _interval_minutes(tier.candle_interval)
             limit = min(1500, int(span_ms / 60_000 / minutes) + 2) if minutes else 500
-            # Kerzen kommen von Binance (Preise der Börsen liegen dicht beieinander)
-            bars = await self.klines.get(split_key(symbol)[1], tier.candle_interval, limit)
+            bars = await source.get(raw, tier.candle_interval, limit)
+            if exchange == "bitunix":
+                bars = self._with_forming_bar(symbol, bars, minutes)
             out.append(encode_klines(symbol, tier.name, tier.candle_interval, bars))
         if what == "all":
             out.append(encode_control("long_ready", symbol=symbol, tier=tier.name))
@@ -466,6 +519,10 @@ class MarketFeed:
                         )
                     if boundary % i_ns == 0:
                         self._publish_tier(sym, agg, tier, boundary)
+                    elif boundary % s_ns == 0 and self.bridge.watches_tier(sym, tier.name):
+                        live = self._provisional_frame(sym, tier, boundary)
+                        if live is not None:
+                            self.bridge.publish_tier(sym, tier.name, live)
                 self.columns += 1
                 self.build_ns_total += dt
                 self.build_ns_max = max(self.build_ns_max, dt)
@@ -487,6 +544,8 @@ class MarketFeed:
                 )
         if self.klines is not None:
             await self.klines.close()
+        if self.bitunix_klines is not None:
+            await self.bitunix_klines.close()
 
 
 def _interval_minutes(iv: str) -> int:

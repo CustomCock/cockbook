@@ -36,7 +36,7 @@ from typing import Any
 
 import aiohttp
 
-from cockbook.adapters.common import get_json, run_ws, sleep_or_stop
+from cockbook.adapters.common import RestError, get_json, run_ws, sleep_or_stop
 from cockbook.config import BitunixConfig
 from cockbook.core.eventbus import EventBus
 from cockbook.core.events import (
@@ -118,6 +118,68 @@ def parse_klines(data: list[dict[str, Any]]) -> list[CandleBar]:
         for d in data
     ]
     return sorted(bars, key=lambda b: b.open_time_ns)
+
+
+async def fetch_klines(
+    session: aiohttp.ClientSession,
+    rest_url: str,
+    symbol: str,
+    interval: str,
+    limit: int,
+    stop: asyncio.Event | None = None,
+) -> list[CandleBar]:
+    """Die letzten ``limit`` abgeschlossenen Kerzen, rückwärts in Seiten zu 200
+    (Doku: max. 200 je Abfrage, 10 Abfragen/s). Aufsteigend sortiert."""
+    bars: dict[int, CandleBar] = {}
+    end_ms: int | None = None
+    while len(bars) < limit and not (stop is not None and stop.is_set()):
+        params: dict[str, str | int] = {
+            "symbol": symbol,
+            "interval": interval,
+            "limit": min(_KLINE_PAGE, limit - len(bars)),
+        }
+        if end_ms is not None:
+            params["endTime"] = end_ms
+        data, _ = await get_json(session, f"{rest_url}/api/v1/futures/market/kline", params)
+        page = parse_klines(data.get("data") or [])
+        new = [b for b in page if b.open_time_ns not in bars]
+        if not new:
+            break
+        bars.update((b.open_time_ns, b) for b in new)
+        end_ms = page[0].open_time_ns // 1_000_000 - 1
+        if len(bars) < limit:
+            await asyncio.sleep(_KLINE_PAUSE_S)
+    return [bars[t] for t in sorted(bars)]
+
+
+class BitunixKlines:
+    """Kerzen auf Anfrage für die Langzeit-Ansicht (5m/15m/1h/4h), kurz zwischengespeichert
+    wie ``BinanceKlines`` – die Ansicht fragt jede Minute nach."""
+
+    def __init__(self, cfg: BitunixConfig, ttl_s: float = 30.0) -> None:
+        self.cfg = cfg
+        self.ttl_s = ttl_s
+        self._cache: dict[tuple[str, str, int], tuple[float, list[CandleBar]]] = {}
+        self._session: aiohttp.ClientSession | None = None
+
+    async def get(self, symbol: str, interval: str, limit: int) -> list[CandleBar]:
+        key = (symbol.upper(), interval, limit)
+        hit = self._cache.get(key)
+        if hit is not None and time.monotonic() - hit[0] < self.ttl_s:
+            return hit[1]
+        if self._session is None or self._session.closed:
+            self._session = _session()
+        try:
+            bars = await fetch_klines(self._session, self.cfg.rest_url, key[0], interval, limit)
+        except (RestError, aiohttp.ClientError, TimeoutError, KeyError, ValueError) as e:
+            log.warning("bitunix klines failed", extra={"symbol": symbol, "error": repr(e)})
+            return hit[1] if hit else []
+        self._cache[key] = (time.monotonic(), bars)
+        return bars
+
+    async def close(self) -> None:
+        if self._session is not None:
+            await self._session.close()
 
 
 class MinuteCandleBuilder:
@@ -311,31 +373,16 @@ class BitunixAdapter:
         log.info("bitunix adapter stopped", extra={"symbol": self.symbol})
 
     async def _candle_history(self, session: aiohttp.ClientSession) -> None:
-        """1m-Kerzen rückwärts in Seiten zu 200 laden. Fehler hier sind nicht fatal: Ohne
-        Historie zeigt der Chart eben nur die Kerzen ab jetzt."""
-        bars: dict[int, CandleBar] = {}
-        end_ms: int | None = None
+        """1m-Kerzen beim Start. Fehler sind nicht fatal: Ohne Historie zeigt der Chart eben
+        nur die Kerzen ab jetzt."""
         try:
-            while len(bars) < self.cfg.candle_history_bars and not self._stop.is_set():
-                params: dict[str, str | int] = {
-                    "symbol": self.symbol,
-                    "interval": "1m",
-                    "limit": min(_KLINE_PAGE, self.cfg.candle_history_bars - len(bars)),
-                }
-                if end_ms is not None:
-                    params["endTime"] = end_ms
-                data, _ = await get_json(
-                    session, f"{self.cfg.rest_url}/api/v1/futures/market/kline", params
-                )
-                page = parse_klines(data.get("data") or [])
-                new = [b for b in page if b.open_time_ns not in bars]
-                if not new:
-                    break
-                bars.update((b.open_time_ns, b) for b in new)
-                end_ms = page[0].open_time_ns // 1_000_000 - 1
-                await sleep_or_stop(self._stop, _KLINE_PAUSE_S)
-        except (aiohttp.ClientError, TimeoutError, RuntimeError, KeyError, ValueError) as e:
+            bars = await fetch_klines(
+                session, self.cfg.rest_url, self.symbol, "1m", self.cfg.candle_history_bars,
+                self._stop,
+            )  # fmt: skip
+        except (RestError, aiohttp.ClientError, TimeoutError, KeyError, ValueError) as e:
             log.warning("bitunix klines failed", extra={"symbol": self.symbol, "error": repr(e)})
+            return
         if bars and not self.bus.closed:
             await self.bus.publish(
                 CandleHistory(
@@ -344,7 +391,7 @@ class BitunixAdapter:
                     ts_recv_ns=time.time_ns(),
                     interval="1m",
                     source="futures",
-                    bars=tuple(bars[t] for t in sorted(bars)),
+                    bars=tuple(bars),
                 )
             )
 

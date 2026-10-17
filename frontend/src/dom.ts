@@ -45,7 +45,19 @@ export function rowBucketsFor(view: View, ph: number, minRowPx = MIN_ROW_PX): nu
   return raw <= 1 ? 1 : Math.round(niceStep(raw));
 }
 
-export function buildDomRows(store: HeatmapStore, view: View, pw: number, ph: number, bucketTicks: number): DomData {
+/**
+ * `valueScale`: Faktor auf die Bucket-Werte. Die Langzeit-Heatmap speichert Dichte je feinem
+ * Bucket (damit alle Stufen dieselbe Farbskala vertragen); fürs Orderbuch zählt die Menge je
+ * grobem Bucket = Dichte x Faktor.
+ */
+export function buildDomRows(
+  store: HeatmapStore,
+  view: View,
+  pw: number,
+  ph: number,
+  bucketTicks: number,
+  valueScale = 1,
+): DomData {
   const rb = rowBucketsFor(view, ph);
   const first = Math.floor(view.yLo / rb);
   const last = Math.floor(view.yHi / rb);
@@ -71,7 +83,7 @@ export function buildDomRows(store: HeatmapStore, view: View, pw: number, ph: nu
     const baRow = Math.floor(Math.floor(ba / bucketTicks) / rb);
     for (const row of rows) {
       for (let b = row.bucket; b < row.bucket + rb; b++) {
-        const v = store.valueAt(k, b);
+        const v = store.valueAt(k, b) * valueScale;
         if (!v) continue;
         // Bucket-Grenze statt Einzelpreis: Bucket mit dem Best Bid zählt zur Bid-Seite
         if (b * bucketTicks <= bb) row.bid += v;
@@ -140,6 +152,8 @@ export interface DomOptions {
   usd: boolean;
   /** Preis je Tick (für USDT-Umrechnung) */
   tickSize: number;
+  /** Langzeit: Buch = Mittel über das Intervall, kein Volumen je Preis */
+  average?: boolean;
 }
 
 export function drawDom(
@@ -249,10 +263,13 @@ export function drawDom(
     const tx = align === "l" ? x + 4 : align === "r" ? x + w - 4 - tw : x + (w - tw) / 2;
     ctx.fillText(t, tx, HEADER_H / 2);
   };
-  label(`BID${unit}`, COLS.bid, "r");
-  label(`ASK${unit}`, COLS.ask, "l");
-  label(`VOL${unit}`, COLS.vol, "l");
-  label("Δ", COLS.delta, "r");
+  const avg = opt.average ? "Ø " : "";
+  label(`${avg}BID${unit}`, COLS.bid, "r");
+  label(`${avg}ASK${unit}`, COLS.ask, "l");
+  if (!opt.average) {
+    label(`VOL${unit}`, COLS.vol, "l");
+    label("Δ", COLS.delta, "r");
+  } else label("Mittel je Spalte", COLS.vol, "l");
   if (!data || data.k === null) {
     ctx.fillStyle = C.muted;
     ctx.fillText("kein Orderbuch an dieser Stelle", 8, HEADER_H + 14);

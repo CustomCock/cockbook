@@ -418,8 +418,26 @@ class LongTermAccumulator:
         else:
             self.liq_short += usd
 
+    @property
+    def has_samples(self) -> bool:
+        return self._count > 0
+
+    @property
+    def liquidations(self) -> tuple[float, float]:
+        return (self.liq_long, self.liq_short)
+
+    def peek(self, ts_ns: int) -> HeatmapColumn:
+        """Spalte des laufenden Intervalls (bisherige Abtastungen), ohne zurückzusetzen."""
+        return self._column(ts_ns)
+
     def take(self, ts_ns: int) -> HeatmapColumn:
         """Liefert die grobe Spalte des abgelaufenen Intervalls (dünn) und setzt zurück."""
+        col = self._column(ts_ns)
+        self._sum = {}
+        self._count = 0
+        return col
+
+    def _column(self, ts_ns: int) -> HeatmapColumn:
         if not self._sum or self._count == 0:
             col = HeatmapColumn(ts_ns, False, 0, array("f"), None, None, idx=array("i"))
         else:
@@ -435,8 +453,6 @@ class LongTermAccumulator:
                 self._ba,
                 idx=array("i", (b - base for b in keys)),
             )
-        self._sum = {}
-        self._count = 0
         return col
 
     def take_liquidations(self) -> tuple[float, float]:

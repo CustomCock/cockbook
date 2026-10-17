@@ -14,6 +14,7 @@ import { AXIS_H, AXIS_W, drawPriceAxis, drawTimeAxis, dateLabel, formatPrice, gr
 import { buildCandles, RRectBuilder, type Bar } from "./candles";
 import { computeRange, type ScaleRange, type ScaleSettings } from "./colorscale";
 import { HeatmapRenderer, PRIM, PrimRenderer, RRectRenderer } from "./gl";
+import { buildDomRows, DOM_W, drawDom } from "./dom";
 import { decimalsOf, type Markets } from "./markets";
 import { toFloat32, toInt32, type Connection, type LongHello, type LongMessage } from "./net";
 import { buildBbo, buildGrid, LINE, VertexBuilder, type SceneParams } from "./scene";
@@ -24,11 +25,16 @@ export const LONG_TIERS = ["12h", "1D", "1W", "1M"] as const;
 const LIQ_H = 74;
 const ROWS = 4096;
 const KLINE_REFRESH_MS = 60_000;
+/** Kleinster automatisch gezeigter Zeitraum: 1 h bzw. 24 Spalten (1M: 12 h) */
+const MIN_FIT_MS = 3_600_000;
+const MIN_FIT_COLS = 24;
 
 export interface LongLayers {
   heat: boolean;
   candles: boolean;
   liqs: boolean;
+  /** Orderbuch (Ø-Buch der Spalte am rechten Rand) neben der Preisachse */
+  dom: boolean;
 }
 
 const $el = <K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string) => {
@@ -57,6 +63,7 @@ export class LongView {
   private yAxis: HTMLCanvasElement;
   private xAxis: HTMLCanvasElement;
   private liqCanvas: HTMLCanvasElement;
+  private domCanvas: HTMLCanvasElement;
   private plot: HTMLElement;
   private crossV: HTMLElement;
   private crossH: HTMLElement;
@@ -73,7 +80,9 @@ export class LongView {
 
   symbol: string | null = null;
   tier = "1D";
-  layers: LongLayers = { heat: true, candles: true, liqs: true };
+  layers: LongLayers = { heat: true, candles: true, liqs: true, dom: true };
+  /** Zeitraum folgt den Daten (bis der Nutzer selbst horizontal zoomt/zieht) */
+  private autoFit = true;
   private hello: LongHello | null = null;
   private store: HeatmapStore | null = null;
   private bars: Bar[] = [];
@@ -97,6 +106,7 @@ export class LongView {
     private conn: Connection,
     private scale: () => ScaleSettings,
     private onTierChange: (tier: string) => void,
+    private domUsd: () => boolean = () => false,
   ) {
     this.root = root;
     root.classList.add("longview");
@@ -118,11 +128,12 @@ export class LongView {
     this.yAxis = $el("canvas");
     this.xAxis = $el("canvas");
     this.liqCanvas = $el("canvas");
+    this.domCanvas = $el("canvas");
     this.crossV = $el("div", "cross cross-v");
     this.crossH = $el("div", "cross cross-h");
     this.tooltip = $el("div", "long-tooltip");
     this.message = $el("div", "long-message");
-    this.plot.append(this.glCanvas, this.yAxis, this.liqCanvas, this.xAxis, this.crossV, this.crossH, this.tooltip, this.message);
+    this.plot.append(this.glCanvas, this.yAxis, this.domCanvas, this.liqCanvas, this.xAxis, this.crossV, this.crossH, this.tooltip, this.message);
     root.append(bar, this.plot);
 
     this.heat = new HeatmapRenderer(this.glCanvas);
@@ -186,7 +197,9 @@ export class LongView {
   }
 
   setLayers(l: LongLayers): void {
+    const relayout = l.dom !== this.layers.dom || l.liqs !== this.layers.liqs;
     this.layers = l;
+    if (relayout) this.resize();
     this.dirty();
   }
 
@@ -197,6 +210,7 @@ export class LongView {
     this.liq.clear();
     this.range = null;
     this.autoY = true;
+    this.autoFit = true;
     this.loading = true;
     this.view = { ...this.view, offset: 0 };
     for (const [t, b] of this.tierButtons) b.classList.toggle("on", t === this.tier);
@@ -222,6 +236,7 @@ export class LongView {
         this.fitTime();
       } else {
         this.loading = false;
+        if (this.autoFit) this.fitTime(false);
         this.updateRange();
         this.updateMessage();
       }
@@ -250,11 +265,15 @@ export class LongView {
     const values = toFloat32(m.q);
     const idx = m.i ? toInt32(m.i) : null;
     const center = m.bb !== null && m.ba !== null ? Math.floor((m.bb + m.ba) / 2 / (m.bt * m.f)) : null;
-    if (s.pushColumn(m.ts, m.s, m.b, values, idx, center) >= 0) {
+    // Laufende Spalte (p) und danach die endgültige haben denselben Zeitstempel -> ersetzen
+    const { index, replaced } = s.upsertColumn(m.ts, m.s, m.b, values, idx, center);
+    if (index >= 0) {
       s.setBbo(m.ts, m.bb, m.ba);
       if (m.ll || m.lsh) this.liq.set(m.ts, [m.ll, m.lsh]);
+      else this.liq.delete(m.ts);
       // Zurückgescrollt: betrachteten Zeitpunkt festhalten
-      if (this.view.offset > 0 && !this.loading) this.view = { ...this.view, offset: this.view.offset + 1 };
+      if (!replaced && this.view.offset > 0 && !this.loading) this.view = { ...this.view, offset: this.view.offset + 1 };
+      if (!replaced && this.autoFit && !this.loading) this.fitTime(false);
     }
     if (!this.loading) this.updateMessage();
     this.dirty();
@@ -309,7 +328,7 @@ export class LongView {
 
   private size(): { pw: number; ph: number } {
     return {
-      pw: Math.max(1, this.plot.clientWidth - AXIS_W),
+      pw: Math.max(1, this.plot.clientWidth - AXIS_W - (this.layers.dom ? DOM_W : 0)),
       ph: Math.max(1, this.plot.clientHeight - AXIS_H - (this.layers.liqs ? LIQ_H : 0)),
     };
   }
@@ -329,6 +348,8 @@ export class LongView {
     };
     place(this.glCanvas, 0, 0, pw, ph);
     place(this.yAxis, pw, 0, AXIS_W, ph + lh + AXIS_H);
+    this.domCanvas.style.display = this.layers.dom ? "block" : "none";
+    if (this.layers.dom) place(this.domCanvas, pw + AXIS_W, 0, DOM_W, ph + lh + AXIS_H);
     this.liqCanvas.style.display = lh ? "block" : "none";
     if (lh) place(this.liqCanvas, 0, ph, pw, lh);
     place(this.xAxis, 0, ph + lh, pw, AXIS_H);
@@ -338,13 +359,24 @@ export class LongView {
     this.dirty();
   }
 
-  /** Ganzen Zeitraum der Stufe einpassen. */
-  private fitTime(): void {
+  /**
+   * Zeitraum einpassen: der ganze Zeitraum der Stufe – solange die Heatmap noch nicht so
+   * weit zurückreicht, nur der gesammelte Teil (mindestens 1 h bzw. 24 Spalten). Sonst
+   * wäre beim ersten Start nur ein schmaler Streifen am rechten Rand zu sehen.
+   */
+  private fitTime(resetY = true): void {
     const h = this.hello;
     if (!h) return;
     const { pw } = this.size();
-    this.view = { ...this.view, colWidth: pw / Math.max(1, h.span_ms / h.interval_ms), offset: 0 };
-    this.autoY = true;
+    const s = this.store;
+    let span = h.span_ms;
+    if (s && s.count) {
+      const collected = s.latestTs! - s.oldestTs! + h.interval_ms;
+      span = Math.min(h.span_ms, Math.max(collected, MIN_FIT_MS, MIN_FIT_COLS * h.interval_ms));
+    }
+    this.view = { ...this.view, colWidth: pw / Math.max(1, span / h.interval_ms), offset: 0 };
+    if (resetY) this.autoY = true;
+    this.autoFit = true;
   }
 
   /** Preisbereich an die sichtbaren Kerzen (sonst BBO) anpassen. */
@@ -428,6 +460,7 @@ export class LongView {
         const { y } = local(e);
         if (e.shiftKey || y > ph) {
           this.view = zoomX(this.view, 1 / f);
+          this.autoFit = false;
         } else {
           this.view = zoomY(this.view, f, yToUnit(y, this.view, ph));
           this.autoY = false;
@@ -452,6 +485,7 @@ export class LongView {
           this.autoY = false;
         }
         const offset = Math.min(Math.max(d.view.offset + (e.clientX - d.x) / d.view.colWidth, 0), this.maxOffset());
+        if (offset !== d.view.offset) this.autoFit = false;
         this.view = { ...v, offset };
         this.dirty();
       }
@@ -511,6 +545,14 @@ export class LongView {
       this.rrects.draw(this.vCandles.data, this.vCandles.n, pw, ph, px);
     }
     drawPriceAxis(this.yAxis, this.dpr, this.layers.candles ? null : s, this.view, inst, ph);
+    if (this.layers.dom) {
+      const data = s && inst && h && s.count ? buildDomRows(s, this.view, pw, ph, inst.bucketTicks, h.factor) : null;
+      drawDom(this.domCanvas, this.dpr, data, this.view, ph, inst?.bucketTicks ?? 1, {
+        usd: this.domUsd(),
+        tickSize: inst?.tickSize ?? 1,
+        average: true,
+      });
+    }
     drawTimeAxis(this.xAxis, this.dpr, latest, this.view, h?.interval_ms ?? 60_000, pw, true);
     if (this.layers.liqs) this.drawLiqs(pw, latest);
     this.hover();
@@ -539,8 +581,10 @@ export class LongView {
     ctx.font = "10px ui-monospace, monospace";
     ctx.fillStyle = "#80848b";
     ctx.textBaseline = "top";
-    ctx.fillText("Liquidationen je Spalte (Longs ▲ · Shorts ▼)", 8, 4);
-    if (!h || latest === null || !this.liq.size) return;
+    ctx.fillText("Liquidationen je Spalte (Longs ▲ · Shorts ▼) · Volumen je Kerze (grau)", 8, 4);
+    if (!h || latest === null) return;
+    this.drawVolume(ctx, pw, latest, h.interval_ms);
+    if (!this.liq.size) return;
     // Pro Pixel-Spalte aufsummieren (bei 1M liegen mehrere Spalten auf einem Pixel)
     const bins = new Map<number, [number, number]>();
     for (const [ts, [ll, ls]] of this.liq) {
@@ -573,6 +617,27 @@ export class LongView {
     ctx.textBaseline = "top";
     const label = `max ${fmtUsd(max)}`;
     ctx.fillText(label, pw - ctx.measureText(label).width - 6, 4);
+  }
+
+  /** Gehandeltes Volumen je Kerze als blasse Balken über die ganze Höhe des Bereichs.
+   *  Kommt mit den Kerzen von der Börse – auch für die Zeit vor dem ersten Start. */
+  private drawVolume(ctx: CanvasRenderingContext2D, pw: number, latest: number, iv: number): void {
+    let max = 0;
+    const spans: [number, number, number][] = [];
+    for (const b of this.bars) {
+      const x0 = colToX((latest - b.t) / iv, this.view, pw);
+      const x1 = colToX((latest - b.t - this.barMs) / iv, this.view, pw);
+      if (x1 < 0 || x0 > pw) continue;
+      spans.push([x0, x1, b.v]);
+      max = Math.max(max, b.v);
+    }
+    if (!max) return;
+    ctx.fillStyle = "rgba(200, 204, 212, 0.13)";
+    const top = 18;
+    for (const [x0, x1, v] of spans) {
+      const hh = (v / max) * (LIQ_H - top - 2);
+      ctx.fillRect(Math.min(x0, x1) + 0.5, LIQ_H - 2 - hh, Math.max(1, Math.abs(x1 - x0) - 1), hh);
+    }
   }
 
   /** Fadenkreuz + Tooltip (Zeit, Preis, Liquidität, Kerze, Liquidationen). */

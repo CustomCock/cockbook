@@ -105,8 +105,12 @@ Die Seitenleiste enthält alle Funktionen zum Ein-/Ausschalten (gelten für alle
   jede Stufe mit eigener Auflösung (30 s / 1 min / 10 min / 30 min je Spalte), dazu Kerzen
   (5m/15m/1h/4h) und Liquidationen je Spalte. Die Seitenleiste zeigt dort ATH & Zyklen, Derivate und
   Liquidationen. Daten sammelt das Backend, solange das Orderbuch eines Coins läuft (`always_on` =
-  immer), und speichert sie unter `data/longterm/` – sie überstehen Neustarts. Ein Coin ohne
-  gesammelte Daten zeigt zunächst nur Kerzen; die Heatmap füllt sich mit der Zeit.
+  immer), und speichert sie unter `data/longterm/` – sie überstehen Neustarts. Rechts daneben ein
+  **Ø-Orderbuch** (mittleres Buch der Spalte am rechten Rand), unten **Volumen je Kerze**.
+  Beim ersten Start: Kerzen und Volumen sind sofort für den ganzen Zeitraum da, die laufende
+  Heatmap-Spalte erscheint sofort (nicht erst am Intervallende), und solange weniger gesammelt
+  ist als der Zeitraum, zoomt die Ansicht auf die vorhandenen Daten (mindestens 1 h). Ältere
+  Orderbuch-Historie gibt es nicht: Keine Börse stellt sie kostenlos bereit.
 - **Orderbuch (DOM):** rechts neben der Preisachse, auf derselben Preisachse wie die Heatmap: Bid/Ask je
   Preiszeile (zurückgescrollt: zum betrachteten Zeitpunkt), gehandeltes Volumen (Kauf/Verkauf) und
   Delta im sichtbaren Zeitraum. Zeilen fassen je nach Zoom 1, 2, 5, 10 … Stufen zusammen. Klick auf die

@@ -10,7 +10,7 @@ import { buildDomRows, DOM_W, drawDom } from "./dom";
 import { loadFeatures, saveFeatures } from "./features";
 import { HeatmapRenderer, PRIM, PrimRenderer, RRectRenderer } from "./gl";
 import { coarseView, type LongParams } from "./longterm";
-import { LongView } from "./longview";
+import { LongView, type LongLayers } from "./longview";
 import { Markets, decimalsOf } from "./markets";
 import { connect, toFloat32, toInt32, type Hello } from "./net";
 import {
@@ -335,8 +335,8 @@ function rememberCurrent(): void {
   while (cache.size > CACHE_SYMBOLS) cache.delete(cache.keys().next().value!);
 }
 
-function longLayers(): { heat: boolean; candles: boolean; liqs: boolean } {
-  return { heat: !!features.longHeat, candles: !!features.longCandles, liqs: !!features.longLiqs };
+function longLayers(): LongLayers {
+  return { heat: !!features.longHeat, candles: !!features.longCandles, liqs: !!features.longLiqs, dom: !!features.longDom };
 }
 
 /** Tab aktivieren: Live-Chart ("BTCUSDT") oder Langzeit-Heatmap ("BTCUSDT@long"). */
@@ -565,7 +565,7 @@ const longView = new LongView($<HTMLElement>("longchart"), markets, conn, scaleS
   longTier = t;
   saveJson(LONG_TIER_KEY, { tier: t });
   sidebar.setMode("long", t);
-});
+}, () => domUsd);
 longView.hide();
 
 // Token-Link geöffnet, während die Seite schon offen ist (nur der #-Teil ändert sich)

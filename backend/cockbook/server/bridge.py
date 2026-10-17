@@ -165,6 +165,10 @@ class Bridge:
             if c.long_sub == key:
                 c.put(frame)
 
+    def watches_tier(self, symbol: str, tier: str) -> bool:
+        """Sieht gerade jemand diese Langzeit-Stufe an? (vorläufige Spalten nur dann bauen)"""
+        return any(c.long_sub == (symbol, tier) for c in self._clients)
+
     def set_static(self, symbol: str, key: str, frame: bytes) -> None:
         """Ersetzt einen Zustand des Symbols und schickt ihn an aktuelle Abonnenten."""
         self._channel(symbol).static[key] = frame

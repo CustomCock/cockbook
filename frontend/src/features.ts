@@ -42,9 +42,11 @@ export const FEATURES: Feature[] = [
   { id: "longHeat", label: "Heatmap", group: "long", status: "live", defaultOn: true,
     hint: "Mittlere Liquidität je Preis über Stunden bis Wochen (vom Backend gesammelt, auf Platte gespeichert)" },
   { id: "longCandles", label: "Kerzen", group: "long", status: "live", defaultOn: true,
-    hint: "12h: 5m · 1D: 15m · 1W: 1h · 1M: 4h (Binance)" },
-  { id: "longLiqs", label: "Liquidationen je Zeitraum", group: "long", status: "live", defaultOn: true,
-    hint: "Liquidierte Longs (orange) und Shorts (blau) je Spalte, unter dem Chart" },
+    hint: "12h: 5m · 1D: 15m · 1W: 1h · 1M: 4h (von der jeweiligen Börse)" },
+  { id: "longLiqs", label: "Liquidationen & Volumen", group: "long", status: "live", defaultOn: true,
+    hint: "Liquidierte Longs (orange) und Shorts (blau) je Spalte, dazu gehandeltes Volumen je Kerze (grau)" },
+  { id: "longDom", label: "Orderbuch (Ø)", group: "long", status: "live", defaultOn: true,
+    hint: "Durchschnittliches Buch der Spalte am rechten Rand (live: laufendes Intervall), zurückgescrollt: zu diesem Zeitpunkt" },
 
   // --- Langfristig: ATH & Zyklen ---------------------------------------------------------
   { id: "ath", label: "Allzeithoch & Jahr", group: "history", status: "live", defaultOn: true,
