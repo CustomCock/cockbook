@@ -114,6 +114,16 @@ export interface Handlers {
   onPaper?(m: PaperMessage): void;
   /** Echtes Börsenkonto */
   onLive?(m: LiveState): void;
+  onLiveResult?(m: LiveResult): void;
+}
+
+/** Antwort auf eine Live-Anfrage (`data` z. B. Hebel/Margin-Modus bei "settings"). */
+export interface LiveResult {
+  type: "live_result";
+  req: number | null;
+  ok: boolean;
+  message: string;
+  data: { symbol?: string; leverage?: number; margin_mode?: string };
 }
 
 /** Echtes Börsenkonto (Stufe 1: nur lesen). */
@@ -126,8 +136,10 @@ export interface LiveState {
   ws: boolean;
   key: string | null;
   updated: number;
+  /** true = Live-Trading in config.yaml aus (nur lesen) */
   read_only: boolean;
   max_leverage: number;
+  tpsl_trigger?: string;
   account?: { available: number; frozen: number; margin: number; upnl: number; equity: number; transfer: number | null; bonus: number | null; position_mode: string | null };
   positions?: {
     symbol: string;
@@ -147,6 +159,7 @@ export interface LiveState {
     tp: number | null;
     sl: number | null;
     opened: number;
+    tpsl_ids?: string[];
   }[];
   orders?: { id: string; symbol: string; side: "buy" | "sell"; kind: string; qty: number; filled: number; price: number | null; reduce_only: boolean; tp: number | null; sl: number | null; status: string; created: number }[];
   warnings?: string[];
@@ -279,6 +292,8 @@ export interface Connection {
   longOff(): void;
   /** Paper-Trading-Anfrage; Rückgabe = Anfrage-Nummer (kommt im `paper_result` zurück) */
   paper(op: string, payload?: Record<string, unknown>): number;
+  /** Echtes Konto (Bitunix): Anfrage-Nummer kommt im `live_result` zurück */
+  live(op: string, payload?: Record<string, unknown>): number;
   /** Sofort neu verbinden (z. B. nachdem ein Token eingegeben wurde) */
   reconnect(): void;
   close(): void;
@@ -319,6 +334,7 @@ export function connect(url: () => string, h: Handlers, initialSymbol: () => str
         else if (msg.type === "long_hello" || msg.type === "long_ready") h.onLong(msg as LongMessage);
         else if (msg.type.startsWith("paper_")) h.onPaper?.(msg as PaperMessage);
         else if (msg.type === "live_state") h.onLive?.(msg as LiveState);
+        else if (msg.type === "live_result") h.onLiveResult?.(msg as LiveResult);
       } else {
         const f = decode(new Uint8Array(ev.data as ArrayBuffer)) as BinaryFrame | Extract<LongMessage, { t: string }>;
         if (f.t === "lc" || f.t === "lk") h.onLong(f);
@@ -352,6 +368,11 @@ export function connect(url: () => string, h: Handlers, initialSymbol: () => str
     paper: (op: string, payload: Record<string, unknown> = {}) => {
       const req = ++paperReq;
       send({ type: "paper", op, req, ...payload });
+      return req;
+    },
+    live: (op: string, payload: Record<string, unknown> = {}) => {
+      const req = ++paperReq;
+      send({ type: "live", op, req, ...payload });
       return req;
     },
     longOff: () => {

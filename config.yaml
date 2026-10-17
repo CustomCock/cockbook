@@ -179,10 +179,13 @@ trading:
     fees:                       # Anteil: 0.0005 = 0,05 % – eigene Gebührenstufe eintragen
       binance_usdm: {maker: 0.0002, taker: 0.0005}
       bitunix: {maker: 0.0002, taker: 0.0006}
-  live:                         # echtes Bitunix-Konto (Stufe 1: nur lesen)
+  live:                         # echtes Bitunix-Konto
     enabled: true               # wirkt nur mit BITUNIX_API_KEY + BITUNIX_API_SECRET in der Umgebung
     rest_url: https://fapi.bitunix.com
     ws_url: wss://fapi.bitunix.com/private/
     refresh_s: 30               # zusätzlicher REST-Abgleich (Sicherheitsnetz zu den Pushes)
     ping_interval_s: 20
     max_leverage: 100
+    trading_enabled: false      # true = echte Orders erlaubt (zusätzlich im Browser freischalten)
+    max_state_age_s: 90         # neue Positionen nur mit frischem Kontostand
+    tpsl_trigger: MARK_PRICE    # oder LAST_PRICE

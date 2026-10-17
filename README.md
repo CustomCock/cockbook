@@ -163,9 +163,20 @@ echten Orderbücher von Binance bzw. Bitunix – kein Konto, keine API-Keys nöt
   „Alles schließen“ als Kill-Switch. Konto und Verlauf (CSV-Export) liegen in `data/paper/` und
   überstehen Neustarts.
 
-**Echtes Bitunix-Konto** (im Handels-Panel oben „Bitunix (echt)“) – **Stufe 1: nur lesen.** Zeigt
-Konto, Positionen (mit Linien im Chart), offene Orders und TP/SL deines Bitunix-Futures-Kontos.
-Orders senden folgt in Stufe 2.
+**Echtes Bitunix-Konto** (im Handels-Panel oben „Bitunix (echt)“): Konto, Positionen, offene Orders
+und TP/SL deines Bitunix-Futures-Kontos – und **echtes Trading** mit derselben Ordermaske, demselben
+Klick-Trading und denselben Chart-Linien wie beim Paper-Trading (Market und Limit; Bitunix kennt keine
+Stop-Einstiegsorders). **Achtung: echtes Geld.** Sicherungen:
+
+- Aus, bis du in `config.yaml` `trading.live.trading_enabled: true` setzt – und zusätzlich im Browser
+  „Live-Trading freischalten“ klickst (gilt nur für diesen Tab).
+- Vor jeder Order ein Bestätigungsdialog (abschaltbar), Live-Knöpfe gelb umrandet.
+- Vor jeder Order wird geprüft, ob der Coin auf isolierter Margin steht (sonst umgestellt bzw. abgelehnt)
+  und der Hebel `max_leverage` nicht überschreitet.
+- Neue Positionen nur mit frischem Kontostand (`max_state_age_s`); **Schließen, Löschen und Kill-Switch
+  gehen immer.** Kill-Switch: erst alle Orders löschen, dann alle Positionen schließen.
+- Jede Anfrage steht im Order-Log `data/live/orders.jsonl` (ohne Keys).
+- Erste Schritte mit Mini-Mengen weit weg vom Kurs, danach erst normal.
 
 1. Bei Bitunix (API-Verwaltung) einen eigenen API-Key für CockBook anlegen: **nur Futures-Trading,
    kein Abheben, kein Transfer**, IP-Whitelist = deine IP.

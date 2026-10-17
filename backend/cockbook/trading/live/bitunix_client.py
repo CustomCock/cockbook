@@ -181,6 +181,71 @@ class BitunixPrivateRest:
                 return out
 
 
+class BitunixTradeRest(BitunixPrivateRest):
+    """Schreibende Aufrufe (Stufe 2). Doku je Methode; alle Zahlen als Strings, wie verlangt.
+
+    Achtung laut Doku: Eine erfolgreiche Antwort beim Löschen/Ändern heißt nicht, dass es
+    geklappt hat – maßgeblich ist der WebSocket-Push. Der Dienst gleicht danach ab.
+    """
+
+    async def leverage_margin_mode(self, symbol: str) -> dict[str, Any]:
+        # https://www.bitunix.com/api-docs/futures/account/get_leverage_and_margin_mode.html
+        data = await self.get("/api/v1/futures/account/get_leverage_margin_mode",
+                              {"symbol": symbol, "marginCoin": "USDT"})  # fmt: skip
+        return dict(data or {})
+
+    async def change_margin_mode(self, symbol: str, mode: str) -> None:
+        # https://www.bitunix.com/api-docs/futures/account/change_margin_mode.html
+        # (nur ohne offene Position und Orders möglich)
+        await self.post("/api/v1/futures/account/change_margin_mode",
+                        {"marginMode": mode, "symbol": symbol, "marginCoin": "USDT"})  # fmt: skip
+
+    async def change_leverage(self, symbol: str, leverage: int) -> None:
+        # https://www.bitunix.com/api-docs/futures/account/change_leverage.html
+        await self.post("/api/v1/futures/account/change_leverage",
+                        {"symbol": symbol, "leverage": leverage, "marginCoin": "USDT"})  # fmt: skip
+
+    async def place_order(self, body: Mapping[str, Any]) -> dict[str, Any]:
+        # https://www.bitunix.com/api-docs/futures/trade/place_order.html
+        return dict(await self.post("/api/v1/futures/trade/place_order", body) or {})
+
+    async def modify_order(self, body: Mapping[str, Any]) -> dict[str, Any]:
+        # https://www.bitunix.com/api-docs/futures/trade/modify_order.html
+        return dict(await self.post("/api/v1/futures/trade/modify_order", body) or {})
+
+    async def cancel_orders(self, symbol: str, order_ids: list[str]) -> dict[str, Any]:
+        # https://www.bitunix.com/api-docs/futures/trade/cancel_orders.html
+        body = {"symbol": symbol, "orderList": [{"orderId": i} for i in order_ids]}
+        return dict(await self.post("/api/v1/futures/trade/cancel_orders", body) or {})
+
+    async def cancel_all_orders(self, symbol: str | None = None) -> None:
+        # https://www.bitunix.com/api-docs/futures/trade/cancel_all_orders.html
+        await self.post("/api/v1/futures/trade/cancel_all_orders",
+                        {"symbol": symbol} if symbol else {})  # fmt: skip
+
+    async def flash_close(self, position_id: str) -> None:
+        # https://www.bitunix.com/api-docs/futures/trade/flash_close_position.html
+        await self.post("/api/v1/futures/trade/flash_close_position", {"positionId": position_id})
+
+    async def close_all_positions(self) -> None:
+        # https://www.bitunix.com/api-docs/futures/trade/close_all_position.html (1/s)
+        await self.post("/api/v1/futures/trade/close_all_position", {})
+
+    async def place_position_tpsl(self, body: Mapping[str, Any]) -> None:
+        # https://www.bitunix.com/api-docs/futures/tp_sl/place_position_tp_sl_order.html
+        await self.post("/api/v1/futures/tpsl/position/place_order", body)
+
+    async def modify_position_tpsl(self, body: Mapping[str, Any]) -> None:
+        # https://www.bitunix.com/api-docs/futures/tp_sl/modify_position_tp_sl_order.html
+        await self.post("/api/v1/futures/tpsl/position/modify_order", body)
+
+    async def cancel_tpsl(self, symbol: str, order_id: str) -> None:
+        # https://www.bitunix.com/api-docs/futures/tp_sl/cancel_tp_sl_order.html
+        await self.post(
+            "/api/v1/futures/tpsl/cancel_order", {"symbol": symbol, "orderId": order_id}
+        )
+
+
 def _parse(path: str, status: int, text: str) -> Any:
     try:
         payload = json.loads(text)

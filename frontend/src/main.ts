@@ -471,6 +471,10 @@ const conn = connect(
       tradePanel.onLive(m);
       tradeVersion++;
     },
+    onLiveResult(m) {
+      tradePanel.onLiveResult(m);
+      tradeVersion++;
+    },
     onPaper(m) {
       tradePanel.onMessage(m);
       tradeVersion++;

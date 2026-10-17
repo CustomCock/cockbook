@@ -279,6 +279,13 @@ class LiveConfig(_Model):
     refresh_s: Annotated[float, Field(ge=5)] = 30.0
     ping_interval_s: Annotated[float, Field(ge=1)] = 20.0
     max_leverage: Annotated[int, Field(ge=1, le=125)] = 100
+    # Stufe 2: echte Orders. Aus = nur lesen. Zusätzlich muss man im Browser freischalten.
+    trading_enabled: bool = False
+    # Neue Positionen nur, wenn der letzte Abgleich höchstens so alt ist (Schließen/Löschen
+    # geht immer – was Risiko abbaut, darf nie an einem hängenden Abgleich scheitern)
+    max_state_age_s: Annotated[float, Field(ge=5)] = 90.0
+    # Auslöser für TP/SL: MARK_PRICE (robust gegen einzelne Ausreißer-Trades) oder LAST_PRICE
+    tpsl_trigger: Literal["MARK_PRICE", "LAST_PRICE"] = "MARK_PRICE"
     reconnect: ReconnectConfig = Field(default_factory=ReconnectConfig)
 
 

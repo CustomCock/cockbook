@@ -16,10 +16,15 @@ describe("liveLines", () => {
     const lines = liveLines("BITUNIX:BTCUSDT", s);
     expect(lines.map((l) => l.kind)).toEqual(["entry", "liq", "tp", "order"]);
     expect(lines[0]!.label).toBe("LIVE Short 0,5 · +50,00 $");
-    expect(lines[2]!.label).toBe("TP +500,00 $");
+    expect(lines[2]!.label).toBe("LIVE TP +500,00 $");
     expect(lines[3]!.label).toBe("LIVE Limit Kauf 0,75 RO");
     expect(lines.every((l) => !l.drag && !l.cancel)).toBe(true);
     expect(liveLines("BTCUSDT", s)).toEqual([]);
+    // freigeschaltet: Orders und TP/SL ziehbar bzw. löschbar
+    const edit = liveLines("BITUNIX:BTCUSDT", s, true);
+    expect(edit[2]!.drag).toEqual({ type: "tp", symbol: "BITUNIX:BTCUSDT" });
+    expect(edit[3]!.drag).toEqual({ type: "order", id: "9", field: "price" });
+    expect(edit[0]!.drag).toBeUndefined(); // Einstieg/Liquidation nie
     expect(liveLines("X", null)).toEqual([]);
   });
 });

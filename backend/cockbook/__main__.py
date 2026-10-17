@@ -71,7 +71,14 @@ async def run(cfg: AppConfig, symbol: str | None, token: str | None = None) -> N
             if paper is not None:
                 bridge.paper_handler = paper.handle
             # Echtes Konto (Stufe 1: nur lesen) – Keys nur aus der Umgebung
-            live = LiveAccountService(cfg.trading.live, feed.aggs, bridge, Credentials.from_env())
+            live = LiveAccountService(
+                cfg.trading.live,
+                feed.aggs,
+                bridge,
+                Credentials.from_env(),
+                cfg.recorder.data_dir / "live" / "orders.jsonl",
+            )
+            bridge.live_handler = live.handle
             async with asyncio.TaskGroup() as tg:
                 tg.create_task(feed.run(stop))
                 tg.create_task(manager.run(stop))

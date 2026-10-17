@@ -7,7 +7,7 @@
  */
 
 import { LivePanel, liveLines } from "./livepanel";
-import type { Connection, LiveState, PaperMessage, PaperState } from "./net";
+import type { Connection, LiveResult, LiveState, PaperMessage, PaperState } from "./net";
 import type { Markets } from "./markets";
 import { bracketInfo, qtyForPercent, qtyFromInput, roundTick, tradeLines, type OrderKind, type OrderSide, type TradeLine } from "./paper";
 import { coinOf, VENUE_LABEL, venueOf } from "./venue";
@@ -31,7 +31,11 @@ interface Saved {
   clickTrading: boolean;
   /** Paper-Konto oder echtes Börsenkonto */
   mode: "paper" | "live";
+  /** Live: vor jeder Order nachfragen */
+  confirmLive: boolean;
 }
+
+const UNLOCK_KEY = "cockbook.live.unlocked";
 
 const el = <K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string): HTMLElementTagNameMap[K] => {
   const e = document.createElement(tag);
@@ -47,7 +51,7 @@ const cls = (v: number) => (v > 0 ? "up" : v < 0 ? "down" : "");
 export class TradePanel {
   readonly root: HTMLElement;
   state: PaperState | null = null;
-  private saved: Saved = { open: true, kind: "limit", unit: "usdt", amount: "1000", clickTrading: false, mode: "paper" };
+  private saved: Saved = { open: true, kind: "limit", unit: "usdt", amount: "1000", clickTrading: false, mode: "paper", confirmLive: true };
   private ctx: MarketCtx | null = null;
   private dec = 2;
   private pending = new Map<number, string>();
@@ -79,6 +83,9 @@ export class TradePanel {
   private live: LivePanel;
   private badge: HTMLElement;
   private modeBtns = new Map<"paper" | "live", HTMLButtonElement>();
+  /** Hebel/Margin-Modus des aktuellen Coins bei Bitunix (Abfrage "settings") */
+  private liveSettings: { symbol: string; leverage: number; margin_mode: string } | null = null;
+  private liveUnlocked = false;
   /** nur im Paper-Modus sichtbar */
   private paperEls: HTMLElement[] = [];
 
@@ -109,7 +116,32 @@ export class TradePanel {
       this.modeBtns.set(m, b);
       modes.append(b);
     }
-    this.live = new LivePanel(markets, onSelectSymbol);
+    try {
+      // Freigabe gilt nur für diesen Tab (sessionStorage), nie dauerhaft
+      this.liveUnlocked = sessionStorage.getItem(UNLOCK_KEY) === "1";
+    } catch {
+      /* egal */
+    }
+    this.live = new LivePanel(markets, onSelectSymbol, {
+      unlocked: () => this.liveUnlocked,
+      setUnlocked: (on) => {
+        this.liveUnlocked = on;
+        try {
+          if (on) sessionStorage.setItem(UNLOCK_KEY, "1");
+          else sessionStorage.removeItem(UNLOCK_KEY);
+        } catch {
+          /* egal */
+        }
+        this.refresh();
+        this.onOpenChange();
+      },
+      confirmOrders: () => this.saved.confirmLive,
+      setConfirmOrders: (on) => {
+        this.saved.confirmLive = on;
+        this.save();
+      },
+      act: (op, payload, confirmText) => this.liveAct(op, payload, confirmText),
+    });
     const reset = el("button", "trade-link", "Konto zurücksetzen");
     reset.type = "button";
     reset.addEventListener("click", () => {
@@ -234,8 +266,9 @@ export class TradePanel {
       if (confirm("Alle Positionen schließen und alle Orders löschen?")) this.send("close_all");
     });
     this.toasts = el("div", "trade-toasts");
-    root.append(head, modes, this.acct, mask, this.posBox, this.ordersBox, this.otherBox, this.historyBox, kill, this.live.root, this.toasts);
-    this.paperEls = [reset, this.acct, mask, this.posBox, this.ordersBox, this.otherBox, this.historyBox, kill];
+    root.append(head, modes, this.acct, this.live.root, mask, this.live.bottom, this.posBox, this.ordersBox, this.otherBox, this.historyBox, kill, this.toasts);
+    // Die Ordermaske gilt für beide Konten; der Rest ist je Konto eigen
+    this.paperEls = [reset, this.acct, this.posBox, this.ordersBox, this.otherBox, this.historyBox, kill];
     this.setKind(this.saved.kind);
     this.setMode(this.saved.mode, false); // false: main hält das Panel hier noch nicht
     root.hidden = !this.saved.open;
@@ -255,7 +288,7 @@ export class TradePanel {
   }
 
   get clickTrading(): boolean {
-    return this.saved.mode === "paper" && this.saved.clickTrading && this.tradable();
+    return this.saved.clickTrading && this.tradable();
   }
 
   get mode(): "paper" | "live" {
@@ -264,13 +297,82 @@ export class TradePanel {
 
   /** Linien für den Chart – aus dem gerade gewählten Konto. */
   lines(symbol: string): TradeLine[] {
-    if (this.saved.mode === "live") return liveLines(symbol, this.live.state);
+    if (this.saved.mode === "live") return liveLines(symbol, this.live.state, this.live.canTrade);
     return this.state ? tradeLines(symbol, this.state.positions, this.state.orders) : [];
   }
 
   onLive(m: LiveState): void {
+    const wasOk = this.live.state?.status === "ok";
     this.live.state = m;
-    if (this.saved.mode === "live") this.live.render(this.ctx?.symbol ?? null, this.dec);
+    if (this.saved.mode !== "live") return;
+    this.live.render(this.ctx?.symbol ?? null, this.dec);
+    if (!wasOk && m.status === "ok") this.requestSettings();
+    this.refresh();
+  }
+
+  onLiveResult(m: LiveResult): void {
+    const what = m.req !== null ? this.pending.get(m.req) : undefined;
+    if (m.req !== null) this.pending.delete(m.req);
+    if (what === "settings") {
+      if (m.ok && m.data.symbol && m.data.leverage !== undefined) {
+        this.liveSettings = { symbol: m.data.symbol, leverage: m.data.leverage, margin_mode: m.data.margin_mode ?? "" };
+        this.refresh();
+      }
+      return;
+    }
+    this.toast(m.ok ? "ok" : "error", m.message || `${what ?? "Aktion"} fehlgeschlagen`);
+    // Hebel/Margin-Modus können sich geändert haben (z. B. vor der Order auf isoliert gestellt)
+    if (what === "leverage" || what === "order") this.requestSettings();
+  }
+
+  /** Hebel und Margin-Modus des aktuellen Coins bei Bitunix abfragen. */
+  private requestSettings(): void {
+    const sym = this.ctx?.symbol;
+    if (this.saved.mode !== "live" || !sym || venueOf(sym) !== "bitunix" || this.live.state?.status !== "ok") return;
+    this.pending.set(this.conn.live("settings", { symbol: sym }), "settings");
+  }
+
+  /**
+   * Anfrage ans echte Konto. Gesperrt, solange nicht freigeschaltet – außer was Risiko
+   * abbaut (Löschen, Schließen, Kill-Switch): das muss immer gehen.
+   */
+  private liveAct(op: string, payload: Record<string, unknown>, confirmText?: string): void {
+    const s = this.live.state;
+    if (!s || s.status === "no_keys" || s.status === "off") {
+      this.toast("error", "Bitunix-Konto nicht verbunden");
+      return;
+    }
+    if (s.read_only) {
+      this.toast("error", "Live-Trading ist in config.yaml aus (trading.live.trading_enabled)");
+      return;
+    }
+    const reducing = op === "cancel" || op === "cancel_all" || op === "close" || op === "close_all";
+    if (!reducing && !this.liveUnlocked) {
+      this.toast("error", "Erst oben „Live-Trading freischalten“");
+      return;
+    }
+    if (confirmText && !confirm(confirmText)) return;
+    if (op === "order" && this.saved.confirmLive && !confirm(this.orderText(payload))) return;
+    this.pending.set(this.conn.live(op, payload), op);
+  }
+
+  private orderText(p: Record<string, unknown>): string {
+    const c = this.ctx;
+    const coin = c ? (this.markets.bySymbol.get(c.symbol)?.label ?? coinOf(c.symbol)) : "";
+    const kind = p.kind === "limit" ? "Limit" : "Market";
+    const side = p.side === "buy" ? "KAUF / Long" : "VERKAUF / Short";
+    const price = p.kind === "limit" ? Number(p.price) : Number(p.ref ?? 0);
+    const qty = Number(p.qty);
+    const lines = [
+      `ECHTE ORDER an Bitunix senden?`,
+      ``,
+      `${kind} ${side} ${qty} ${coin}${p.kind === "limit" ? ` @ ${p.price}` : " zum Marktpreis"}`,
+      `Wert ≈ ${usd(qty * price)} · Hebel ${this.leverage()}x · Margin ≈ ${usd((qty * price) / this.leverage())}`,
+    ];
+    if (p.tp) lines.push(`TP ${p.tp}`);
+    if (p.sl) lines.push(`SL ${p.sl}`);
+    if (p.reduce_only) lines.push("Reduce-Only");
+    return lines.join("\n");
   }
 
   private setMode(m: "paper" | "live", notify = true): void {
@@ -279,10 +381,18 @@ export class TradePanel {
     for (const [k, b] of this.modeBtns) b.classList.toggle("on", k === m);
     for (const e of this.paperEls) e.hidden = m !== "paper";
     this.live.root.hidden = m !== "live";
+    this.live.bottom.hidden = m !== "live";
+    // Bitunix kennt keine Stop-Einstiegsorders
+    this.kindBtns.get("stop")!.hidden = m === "live";
+    if (m === "live" && this.saved.kind === "stop") this.setKind("limit");
     this.badge.textContent = m === "paper" ? "PAPER" : "LIVE";
     this.badge.className = `badge ${m === "paper" ? "paper" : "live-real"}`;
-    if (m === "live") this.live.render(this.ctx?.symbol ?? null, this.dec);
+    if (m === "live") {
+      this.live.render(this.ctx?.symbol ?? null, this.dec);
+      this.requestSettings();
+    }
     if (notify) this.onOpenChange(); // Chart-Linien des anderen Kontos zeichnen
+    this.refresh();
   }
 
   /** Aktueller Markt (Symbol, Raster, BBO) – bei jedem Tick aus main. */
@@ -296,7 +406,11 @@ export class TradePanel {
       this.tp.value = "";
       this.sl.value = "";
       this.renderState();
-      if (this.saved.mode === "live") this.live.render(ctx?.symbol ?? null, this.dec);
+      if (this.saved.mode === "live") {
+        this.live.render(ctx?.symbol ?? null, this.dec);
+        this.liveSettings = null;
+        this.requestSettings();
+      }
     }
     this.refresh();
   }
@@ -320,6 +434,10 @@ export class TradePanel {
   placeAt(side: OrderSide, kind: OrderKind, price: number): void {
     const ctx = this.ctx;
     if (!ctx || !this.tradable()) return;
+    if (this.saved.mode === "live" && kind === "stop") {
+      this.toast("error", "Stop-Einstiegsorders gibt es bei Bitunix nicht – Limit auf der anderen Seite des Kurses nutzen");
+      return;
+    }
     const qty = this.qty(price);
     if (qty <= 0) {
       this.toast("error", "Menge in der Ordermaske eintragen");
@@ -340,25 +458,31 @@ export class TradePanel {
     const ctx = this.ctx;
     if (!ctx) return;
     const p = String(roundTick(price, ctx.tick));
-    if (target.type === "order") this.send("modify", { id: target.id, [target.field]: p });
+    if (target.type === "order") this.send("modify", { symbol: ctx.symbol, id: target.id, [target.field]: p });
     else this.setTpSl(target.symbol, target.type, p);
   }
 
   /** × an einer Linie */
   cancelLine(target: { type: "order"; id: string } | { type: "tp" | "sl"; symbol: string }): void {
-    if (target.type === "order") this.send("cancel", { id: target.id });
+    if (target.type === "order") this.send("cancel", { symbol: this.ctx?.symbol, id: target.id });
     else this.setTpSl(target.symbol, target.type, null);
   }
 
   // --- Intern --------------------------------------------------------------------------
 
+  /** Anfrage an das gerade gewählte Konto (Paper oder echt). */
   private send(op: string, payload: Record<string, unknown> = {}): void {
+    if (this.saved.mode === "live") {
+      this.liveAct(op, payload);
+      return;
+    }
     const req = this.conn.paper(op, payload);
     this.pending.set(req, op);
   }
 
   private setTpSl(symbol: string, which: "tp" | "sl", value: string | null): void {
-    const pos = this.state?.positions.find((p) => p.symbol === symbol);
+    const positions = this.saved.mode === "live" ? (this.live.state?.positions ?? []) : (this.state?.positions ?? []);
+    const pos = positions.find((p) => p.symbol === symbol);
     if (!pos) return;
     const tp = which === "tp" ? value : pos.tp !== null ? String(pos.tp) : null;
     const sl = which === "sl" ? value : pos.sl !== null ? String(pos.sl) : null;
@@ -366,7 +490,15 @@ export class TradePanel {
   }
 
   private tradable(): boolean {
-    return !!this.ctx && venueOf(this.ctx.symbol) !== "multi" && !!this.state;
+    if (!this.ctx) return false;
+    if (this.saved.mode === "live") return venueOf(this.ctx.symbol) === "bitunix" && this.live.canTrade;
+    return venueOf(this.ctx.symbol) !== "multi" && !!this.state;
+  }
+
+  /** Freie Margin des gewählten Kontos (für die %-Knöpfe). */
+  private available(): number {
+    if (this.saved.mode === "live") return this.live.state?.account?.available ?? 0;
+    return this.state?.account.available ?? 0;
   }
 
   private save(): void {
@@ -439,8 +571,12 @@ export class TradePanel {
   }
 
   private leverage(): number {
-    const s = this.state;
     const sym = this.ctx?.symbol;
+    if (this.saved.mode === "live") {
+      if (this.liveSettings && this.liveSettings.symbol === sym) return this.liveSettings.leverage;
+      return this.live.state?.positions?.find((p) => p.symbol === sym)?.leverage ?? 10;
+    }
+    const s = this.state;
     if (!s || !sym) return 10;
     const pos = s.positions.find((p) => p.symbol === sym);
     return pos?.leverage ?? s.leverage[sym] ?? s.account.default_leverage;
@@ -448,11 +584,10 @@ export class TradePanel {
 
   private setPercent(p: number): void {
     const c = this.ctx;
-    const s = this.state;
-    if (!c || !s) return;
+    if (!c) return;
     const price = this.refPrice("buy") ?? (c.bid + c.ask) / 2;
     const fee = venueOf(c.symbol) === "bitunix" ? 0.0006 : 0.0005;
-    const q = qtyForPercent(p, s.account.available, this.leverage(), price, c.step, fee);
+    const q = qtyForPercent(p, this.available(), this.leverage(), price, c.step, fee);
     this.amount.value = this.saved.unit === "coin" ? String(q) : (q * price).toFixed(2);
     this.saved.amount = this.amount.value;
     this.save();
@@ -476,6 +611,8 @@ export class TradePanel {
     const payload: Record<string, unknown> = { symbol: c.symbol, side, kind, qty: String(qty), reduce_only: this.reduce.checked };
     if (kind === "limit") payload.price = String(ref);
     if (kind === "stop") payload.trigger = String(ref);
+    // Market: Referenzpreis für die TP/SL-Prüfung im Backend
+    if (kind === "market") payload.ref = String(roundTick((c.bid + c.ask) / 2, c.tick));
     const tp = this.num(this.tp);
     const sl = this.num(this.sl);
     if (tp !== null) payload.tp = String(tp);
@@ -492,16 +629,33 @@ export class TradePanel {
     const venue = c ? venueOf(c.symbol) : null;
     this.title.textContent = c ? `${coin} · ${VENUE_LABEL[venue!]}` : "kein Coin";
     const multi = venue === "multi";
-    const ok = !!c && !multi && !!s;
+    const live = this.saved.mode === "live";
+    const ls = this.live.state;
+    const ok = this.tradable();
     this.disabledNote.hidden = ok;
-    this.disabledNote.textContent = !s
-      ? "Warte auf das Backend …"
-      : multi
-        ? "Im kombinierten Buch kann man nicht handeln – oben Binance oder Bitunix wählen."
-        : "";
-    for (const b of [this.buyBtn, this.sellBtn]) b.disabled = !ok;
+    this.disabledNote.textContent = live
+      ? !ls || ls.status !== "ok"
+        ? "Bitunix-Konto nicht verbunden (siehe oben)."
+        : ls.read_only
+          ? "Nur lesen – Live-Trading ist in config.yaml aus."
+          : venue !== "bitunix"
+            ? "Live gibt es nur für Bitunix-Coins – oben im Coin-Menü Bitunix wählen."
+            : "Gesperrt – oben „Live-Trading freischalten“."
+      : !s
+        ? "Warte auf das Backend …"
+        : multi
+          ? "Im kombinierten Buch kann man nicht handeln – oben Binance oder Bitunix wählen."
+          : "";
+    for (const b of [this.buyBtn, this.sellBtn]) {
+      b.disabled = !ok;
+      b.classList.toggle("live-order", live);
+    }
+    if (live && this.liveSettings && this.liveSettings.symbol === c?.symbol && this.liveSettings.margin_mode !== "ISOLATION") {
+      this.disabledNote.hidden = false;
+      this.disabledNote.textContent = `Achtung: ${coin} steht bei Bitunix auf ${this.liveSettings.margin_mode} – vor der ersten Order wird auf isoliert umgestellt.`;
+    }
     // Hebel-Auswahl
-    const max = s?.account.max_leverage ?? 50;
+    const max = live ? (ls?.max_leverage ?? 100) : (s?.account.max_leverage ?? 50);
     const lev = this.leverage();
     const opts = LEVERAGES.filter((l) => l <= max);
     if (!opts.includes(lev)) opts.push(lev);
@@ -510,11 +664,12 @@ export class TradePanel {
       opts.forEach((l, i) => (this.lev.options[i]!.value = String(l)));
     }
     if (document.activeElement !== this.lev) this.lev.value = String(lev);
-    this.lev.disabled = !ok || !!s?.positions.some((p) => p.symbol === c?.symbol);
+    this.lev.disabled = !ok || (!live && !!s?.positions.some((p) => p.symbol === c?.symbol));
     // Zusammenfassung
     const kindTxt = { market: "Market", limit: "Limit", stop: "Stop" }[this.saved.kind];
-    this.buyBtn.textContent = `${kindTxt} Kauf / Long`;
-    this.sellBtn.textContent = `${kindTxt} Verkauf / Short`;
+    const tag = live ? "LIVE " : "";
+    this.buyBtn.textContent = `${tag}${kindTxt} Kauf / Long`;
+    this.sellBtn.textContent = `${tag}${kindTxt} Verkauf / Short`;
     const ref = this.refPrice("buy");
     const qty = this.qty(ref);
     if (c && ref !== null && qty > 0) {

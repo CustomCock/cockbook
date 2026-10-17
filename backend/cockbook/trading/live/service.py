@@ -1,4 +1,4 @@
-"""Echtes Bitunix-Konto – Stufe 1: nur lesen.
+"""Echtes Bitunix-Konto: Abgleich (lesen) und – über ``LiveTrader`` – Orders (Stufe 2).
 
 Ablauf:
 - Ohne ``BITUNIX_API_KEY``/``BITUNIX_API_SECRET`` passiert nichts (Status "keine Keys").
@@ -10,7 +10,7 @@ Ablauf:
   Orderbuch fortgeschrieben (Bitunix pusht Positionen nur bei Änderungen, nicht bei
   Kursbewegung).
 
-Stufe 2 (Orders senden) baut hierauf auf; dieser Dienst sendet keine einzige Order.
+Orders laufen über ``LiveTrader`` (``trader.py``); nach jeder Aktion wird abgeglichen.
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ import json
 import logging
 import time
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 
 import aiohttp
@@ -34,10 +35,12 @@ from cockbook.server.bridge import Bridge
 from cockbook.trading.live.bitunix_client import (
     BitunixApiError,
     BitunixPrivateRest,
+    BitunixTradeRest,
     Credentials,
     dec,
     ws_login_message,
 )
+from cockbook.trading.live.trader import LiveTrader
 
 log = logging.getLogger(__name__)
 
@@ -69,7 +72,8 @@ def build_state(
     tp_by_pos: dict[str, dict[str, Any]] = {}
     for t in tpsl:
         pid = str(t.get("positionId", ""))
-        cur = tp_by_pos.setdefault(pid, {})
+        cur = tp_by_pos.setdefault(pid, {"ids": []})
+        cur["ids"].append(str(t.get("id", "")))
         if t.get("tpPrice"):
             cur["tp"] = _f(t.get("tpPrice"))
         if t.get("slPrice"):
@@ -97,6 +101,7 @@ def build_state(
             "margin_mode": p.get("marginMode"),
             "liq": liq if liq is not None and liq > 0 else None,
             "tp": tp_by_pos.get(pid, {}).get("tp"),
+            "tpsl_ids": tp_by_pos.get(pid, {}).get("ids", []),
             "sl": tp_by_pos.get(pid, {}).get("sl"),
             "opened": int(p.get("ctime") or 0),
         })  # fmt: skip
@@ -146,6 +151,7 @@ class LiveAccountService:
         aggs: dict[str, HeatmapAggregator],
         bridge: Bridge,
         cred: Credentials | None,
+        log_path: Path | None = None,
     ) -> None:
         self.cfg = cfg
         self.aggs = aggs
@@ -158,6 +164,8 @@ class LiveAccountService:
         self.updated_ms = 0
         self._dirty = asyncio.Event()
         self._ws: aiohttp.ClientWebSocketResponse | None = None
+        self.trader: LiveTrader | None = None
+        self.log_path = log_path
 
     # --- Ausgabe -----------------------------------------------------------------------
 
@@ -179,7 +187,8 @@ class LiveAccountService:
             "ws": self.ws_connected,
             "key": self.cred.masked_key if self.cred else None,
             "updated": self.updated_ms,
-            "read_only": True,
+            "read_only": not self.cfg.trading_enabled,
+            "tpsl_trigger": self.cfg.tpsl_trigger,
             "max_leverage": self.cfg.max_leverage,
         }
         if self.state is not None:
@@ -195,6 +204,22 @@ class LiveAccountService:
                 positions.append(p)
             out.update({**self.state, "positions": positions})
         return out
+
+    def _grid(self, key: str) -> tuple[Decimal, Decimal] | None:
+        agg = self.aggs.get(key)
+        inst = agg.instrument if agg is not None else None
+        return (inst.tick_size, inst.step_size) if inst is not None else None
+
+    async def handle(self, msg: dict[str, Any]) -> dict[str, Any]:
+        """Anfrage aus dem Browser (Bridge). Danach sofort abgleichen."""
+        if self.trader is None:
+            text = "Bitunix-Konto nicht verbunden (Keys gesetzt?)"
+            return {"type": "live_result", "req": msg.get("req"), "ok": False,
+                    "message": text, "data": {}}  # fmt: skip
+        result = await self.trader.handle(msg)
+        if msg.get("op") != "settings":
+            self._dirty.set()
+        return result
 
     def _publish(self) -> None:
         self.bridge.set_shared("live", json.dumps(self.snapshot(), separators=(",", ":")))
@@ -255,11 +280,16 @@ class LiveAccountService:
         if self.cred is None or not self.cfg.enabled:
             log.info("bitunix live account off", extra={"status": self.status})
             return
-        log.info("bitunix live account (read-only)", extra={"key": self.cred.masked_key})
+        mode = "trading enabled" if self.cfg.trading_enabled else "read-only"
+        log.info("bitunix live account", extra={"key": self.cred.masked_key, "mode": mode})
         async with aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=20), trust_env=True
         ) as session:
-            rest = BitunixPrivateRest(self.cred, self.cfg.rest_url, session)
+            rest = BitunixTradeRest(self.cred, self.cfg.rest_url, session)
+            self.trader = LiveTrader(
+                self.cfg, rest, self._grid, self.snapshot,
+                lambda: (self.status, self.updated_ms), self.log_path,
+            )  # fmt: skip
             async with asyncio.TaskGroup() as tg:
                 tg.create_task(
                     run_ws(

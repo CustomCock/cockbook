@@ -1708,3 +1708,32 @@ button:hover {
 #trade [hidden] {
   display: none !important;
 }
+
+.live-arm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.live-unlock {
+  width: 100%;
+  padding: 8px;
+  border: 1px solid rgba(255, 115, 133, 0.7);
+  background: rgba(255, 115, 133, 0.15);
+  color: var(--down);
+  font-weight: 600;
+}
+
+.live-armed {
+  color: var(--down);
+  font-weight: 600;
+}
+
+/* Live-Order-Knöpfe: unübersehbar anders als Paper */
+.trade-buy.live-order,
+.trade-sell.live-order {
+  outline: 2px solid #e8c547;
+  outline-offset: 1px;
+}

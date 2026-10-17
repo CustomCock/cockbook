@@ -103,6 +103,8 @@ class Bridge:
         self._tasks: set[asyncio.Task[None]] = set()
         # Paper-Trading: Anfrage -> Antwort an den Absender
         self.paper_handler: Callable[[dict[str, Any]], dict[str, Any]] | None = None
+        # Echtes Konto: Anfrage -> Antwort (asynchron, geht an die Börse)
+        self.live_handler: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]] | None = None
         # Zustand für alle Clients (z. B. Paper-Konto), auch für neu verbundene
         self._shared: dict[str, str] = {}
 
@@ -335,11 +337,24 @@ class Bridge:
                 reply = {"type": "paper_result", "req": msg.get("req"), "ok": False,
                          "message": "interner Fehler – siehe Backend-Log"}  # fmt: skip
             client.put(json.dumps(reply))
+        elif msg.get("type") == "live" and self.live_handler is not None:
+            self._spawn(self._live(client, msg))
 
     def _spawn(self, coro: Awaitable[None]) -> None:
         task = asyncio.ensure_future(coro)
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
+
+    async def _live(self, client: _Client, msg: dict[str, Any]) -> None:
+        assert self.live_handler is not None
+        try:
+            reply = await self.live_handler(msg)
+        except Exception:
+            log.exception("live request failed", extra={"op": msg.get("op")})
+            reply = {"type": "live_result", "req": msg.get("req"), "ok": False,
+                     "message": "interner Fehler – siehe Backend-Log", "data": {}}  # fmt: skip
+        if client in self._clients:
+            client.put(json.dumps(reply))
 
     async def _long(self, client: _Client, sym: str, tier: str, what: str) -> None:
         if self.long_handler is None:
