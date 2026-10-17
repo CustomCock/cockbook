@@ -51,17 +51,44 @@ exchanges:
     # Alle TradFi-Kontrakte (Aktien, ETFs, Rohstoffe, Devisen) automatisch ins Coin-Menü;
     # Orderbuch startet erst bei Auswahl.
     tradfi_auto_discover: true
-    # ETFs sind in der exchangeInfo nicht sicher von Aktien zu unterscheiden -> hier
-    # zuordnen (neue ETF-Listings einfach ergänzen). Möglich: stock | etf | commodity | fx
+    # Kategorie je Symbol (stock | etf | commodity | fx). Binance markiert TradFi-Kontrakte
+    # nicht einheitlich, und ETFs sind nicht von Aktien unterscheidbar. Was hier steht, kommt
+    # immer ins Menü (sofern auf Binance handelbar); weitere werden automatisch erkannt.
+    # Neue Listings einfach ergänzen.
     tradfi_categories:
+      # ETFs
+      QQQUSDT: etf     # Invesco QQQ (Nasdaq 100)
+      SPYUSDT: etf     # SPDR S&P 500
+      TQQQUSDT: etf    # ProShares UltraPro QQQ (3x)
       EWJUSDT: etf     # iShares MSCI Japan
       EWYUSDT: etf     # iShares MSCI South Korea
       MSTUUSDT: etf    # T-Rex 2X Long MSTR
       ZCSHUSDT: etf    # Zcash ETF
       GDXUSDT: etf     # VanEck Gold Miners
-      SPYUSDT: etf     # SPDR S&P 500
-      QQQUSDT: etf     # Invesco QQQ (Nasdaq 100)
       IBITUSDT: etf    # iShares Bitcoin Trust
+      # Aktien
+      AAPLUSDT: stock
+      TSMUSDT: stock
+      NVDAUSDT: stock
+      TSLAUSDT: stock
+      AMZNUSDT: stock
+      GOOGLUSDT: stock
+      METAUSDT: stock
+      MSTRUSDT: stock
+      COINUSDT: stock
+      HOODUSDT: stock
+      PLTRUSDT: stock
+      INTCUSDT: stock
+      CRCLUSDT: stock
+      # Rohstoffe
+      XAUUSDT: commodity
+      XAGUSDT: commodity
+      XPTUSDT: commodity
+      XPDUSDT: commodity
+      CLUSDT: commodity      # WTI-Rohöl
+      BZUSDT: commodity      # Brent-Rohöl
+      NATGASUSDT: commodity
+      COPPERUSDT: commodity
     validation:
       enabled: true
       interval_s: 300             # Abgleich lokales Buch vs. REST-Snapshot alle 5 min

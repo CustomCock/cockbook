@@ -31,7 +31,7 @@ exchanges:
     coverage_refresh_min_interval_s: 5  # Refresh wird eingearbeitet, ohne das Buch zu verwerfen
     liquidations_all_market: true   # Liquidationen aller Coins (sekündlich) statt nur der eigenen
     candles_1m_history: 1500        # 1m-Kerzen beim Start (max. 1500 = 25 h)
-    tradfi_categories: {EWJUSDT: etf}
+    tradfi_categories: {EWJUSDT: etf, QQQUSDT: etf, AAPLUSDT: stock}
     validation:
       enabled: true
       interval_s: 30              # im Simulator häufiger prüfen

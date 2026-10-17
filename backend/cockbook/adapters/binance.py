@@ -68,7 +68,7 @@ import asyncio
 import json
 import logging
 import time
-from collections import deque
+from collections import Counter, deque
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -306,9 +306,24 @@ def parse_kline_ws(d: dict[str, Any], symbol: str, recv_ns: int) -> Candle:
     )
 
 
-def is_tradfi(symbol_entry: dict[str, Any]) -> bool:
-    """TradFi-Perps (Gold, Silber, Aktien …) laut exchangeInfo ``contractType``."""
-    return str(symbol_entry.get("contractType", "")).upper() == "TRADIFI_PERPETUAL"
+# underlyingType von Krypto-Kontrakten (COIN = Coin, INDEX = Krypto-Index wie BTCDOM,
+# PREMARKET = Krypto vor dem Spot-Listing). Alles andere ist ein TradFi-Underlying.
+_CRYPTO_UNDERLYINGS = {"", "COIN", "INDEX", "PREMARKET"}
+
+
+def is_tradfi(symbol_entry: dict[str, Any], overrides: dict[str, str] | None = None) -> bool:
+    """TradFi-Kontrakt (Aktie, ETF, Rohstoff, Devise)?
+
+    Binance markiert nicht alle so: ``contractType = TRADIFI_PERPETUAL`` tragen laut einer
+    Stichprobe vom 15.09.2026 nur 22 Symbole (Gold, Öl, einige Aktien), obwohl z. B. QQQ,
+    SPY, AAPL seit April 2026 handelbar sind. Deshalb zusätzlich: ein ``underlyingType``,
+    der kein Krypto ist (EQUITY, COMMODITY, FX …), oder das Symbol steht in der Config.
+    """
+    if str(symbol_entry.get("contractType", "")).upper() == "TRADIFI_PERPETUAL":
+        return True
+    if overrides and str(symbol_entry.get("symbol", "")) in overrides:
+        return True
+    return str(symbol_entry.get("underlyingType", "")).upper() not in _CRYPTO_UNDERLYINGS
 
 
 # underlyingType der TradFi-Kontrakte -> Markt im tradingSession-Stream
@@ -336,11 +351,16 @@ def classify(
     werden sie über ``underlyingSubType`` (falls dort "ETF" steht) oder die Config.
     """
     sym = str(symbol_entry.get("symbol", ""))
-    if not is_tradfi(symbol_entry):
+    if not is_tradfi(symbol_entry, overrides):
         return "crypto", "crypto", None
     ut = str(symbol_entry.get("underlyingType", "")).upper()
     subs = {str(x).upper() for x in symbol_entry.get("underlyingSubType") or []}
     market = _TRADFI_MARKETS.get(ut)
+    if overrides and sym in overrides and market is None:
+        # Underlying unbekannt -> Handelszeiten aus der Kategorie ableiten
+        market = {"stock": "EQUITY", "etf": "EQUITY", "commodity": "COMMODITY", "fx": "FX"}.get(
+            overrides[sym]
+        )
     if overrides and sym in overrides:
         category = overrides[sym]
     elif "ETF" in subs:
@@ -932,7 +952,7 @@ class BinanceUsdmAdapter:
             data, _ = await get_json(session, f"{self.cfg.rest_url}/fapi/v1/exchangeInfo")
             self.inst = inst = parse_instrument(data, self.symbol)
             sym_entry = next(s for s in data["symbols"] if s["symbol"] == self.symbol)
-            tradfi = is_tradfi(sym_entry)
+            tradfi = is_tradfi(sym_entry, self.cfg.tradfi_categories)
             reconnect = (
                 self.cfg.reconnect.model_copy(
                     update={"stale_timeout_s": self.cfg.tradfi_stale_timeout_s}
@@ -1354,9 +1374,25 @@ class BinanceMarketStats:
                 found = sorted(
                     sym
                     for sym, e in entries.items()
-                    if is_tradfi(e) and e.get("status") == "TRADING" and sym not in known
+                    if is_tradfi(e, self.cfg.tradfi_categories)
+                    and e.get("status") == "TRADING"
+                    and sym not in known
                 )
                 self.discovered = found
+                # Zur Diagnose: welche Kontrakt-/Underlying-Typen liefert die Börse?
+                types = Counter(
+                    f"{e.get('contractType', '?')}/{e.get('underlyingType', '?')}"
+                    for e in entries.values()
+                    if e.get("status") == "TRADING"
+                )
+                log.info("exchangeInfo contract types", extra={"types": dict(types)})
+                missing = sorted(
+                    s
+                    for s in self.cfg.tradfi_categories
+                    if s not in entries or entries[s].get("status") != "TRADING"
+                )
+                if missing:
+                    log.info("configured tradfi symbols not trading", extra={"symbols": missing})
                 self.wanted = self.wanted + found
                 log.info("tradfi contracts discovered", extra={"count": len(found)})
             for sym in self.wanted:

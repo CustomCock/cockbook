@@ -149,6 +149,11 @@ def test_is_tradfi() -> None:
     assert is_tradfi({"contractType": "TRADIFI_PERPETUAL"})
     assert not is_tradfi({"contractType": "PERPETUAL"})
     assert not is_tradfi({})
+    assert not is_tradfi({"contractType": "PERPETUAL", "underlyingType": "COIN"})
+    assert not is_tradfi({"contractType": "PERPETUAL", "underlyingType": "INDEX"})
+    # QQQ & Co.: normales PERPETUAL, aber Aktien-Underlying bzw. in der Config
+    assert is_tradfi({"contractType": "PERPETUAL", "underlyingType": "EQUITY"})
+    assert is_tradfi({"symbol": "QQQUSDT", "contractType": "PERPETUAL"}, {"QQQUSDT": "etf"})
 
 
 # --- SourceManager -------------------------------------------------------------------------
@@ -351,6 +356,8 @@ def test_classify_tradfi() -> None:
         == "etf"
     )
     assert classify({**tf, "symbol": "Z", "underlyingType": "SOMETHING_NEW"})[1] == "tradfi"
+    qqq = {"symbol": "QQQUSDT", "contractType": "PERPETUAL", "underlyingType": "COIN"}
+    assert classify(qqq, {"QQQUSDT": "etf"}) == ("tradfi", "etf", "EQUITY")
 
 
 async def test_bridge_since_sends_only_missing_history() -> None:

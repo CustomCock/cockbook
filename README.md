@@ -55,10 +55,12 @@ make dev       # Backend + Frontend-Dev-Server (http://127.0.0.1:5173)
 make dev       # Binance-Livedaten -> Backend (ws://127.0.0.1:8765) + Frontend http://127.0.0.1:5173
 ```
 
-Coins werden oben links im **Dropdown** gewählt (Klick, Taste `/` oder `+` in der Tab-Leiste; Tippen
-filtert, ↑/↓ + Enter). Die Liste ist gruppiert in **Krypto, Aktien, ETFs, Rohstoffe, Devisen** und zeigt
-je Coin Preis, 24h, Veränderung seit 1. Januar, RSI auf Tageskerzen, den Orderbuch-Status (Punkt) und
-bei TradFi die aktuelle Handelsphase (offen, Vorbörse, Nachthandel, geschlossen).
+Coins werden oben links im **Coin-Menü** gewählt (Klick, Taste `/` oder `+` in der Tab-Leiste). Oben im
+Menü wählt eine Leiste die Kategorie – **Krypto, Aktien, ETFs, Rohstoffe, Devisen** –, darunter stehen
+die Coins mit Preis, 24h, Veränderung seit 1. Januar, RSI auf Tageskerzen, Orderbuch-Status (Punkt)
+und bei TradFi der Handelsphase (offen, Vorbörse, Nachthandel, geschlossen). Klick auf einen
+Spaltenkopf sortiert. Die Suche ist optional: einfach lostippen, sie durchsucht alle Kategorien.
+Tastatur: ↑/↓ + Enter, ←/→ Kategorie, Esc.
 
 Jeder gewählte Coin öffnet einen **Tab** (wie im Browser): Klick wechselt, `×` oder Mittelklick
 schließt, Ziehen sortiert um; `Alt+1…9`, `Alt+←/→`, `Alt+W`. Die zuletzt benutzten Coins bleiben samt
@@ -66,9 +68,11 @@ Heatmap im Speicher, der Wechsel zurück ist sofort da. Die Tabs werden im Brows
 
 Krypto-Coins stehen in `config.yaml` unter `symbols` (Standard: Top 20 nach Marktkapitalisierung ohne
 Stablecoins, dazu Gold und Silber). **Aktien-, ETF-, Rohstoff- und Devisen-Kontrakte** (Binance
-„TradFi-Perpetuals“, z. B. TSLA, NVDA, EWJ, Öl) werden automatisch aus der Börse übernommen
-(`tradfi_auto_discover`). Binance unterscheidet ETFs nicht sicher von Aktien – welche Symbole als ETF
-einsortiert werden, steht unter `tradfi_categories` und lässt sich ergänzen. Symbole, die es auf
+„TradFi-Perpetuals“, z. B. QQQ, SPY, AAPL, TSLA, NVDA, Öl) werden automatisch aus der Börse übernommen
+(`tradfi_auto_discover`). Binance kennzeichnet sie nicht einheitlich und unterscheidet ETFs nicht von
+Aktien – deshalb stehen bekannte Symbole mit ihrer Kategorie unter `tradfi_categories`; neue Listings
+dort einfach ergänzen. Beim Start steht im Log, welche Kontrakt-Typen Binance liefert und welche
+konfigurierten Symbole dort (noch) nicht handelbar sind. Symbole, die es auf
 Binance USDⓈ-M nicht gibt, werden mit einer Warnung übersprungen.
 
 Kennzahlen (Preis, 24h, Funding …) kommen für alle Coins über Gesamtmarkt-Streams. Das **Orderbuch**

@@ -46,6 +46,8 @@ SYMBOLS: dict[str, tuple[Decimal, int, float]] = {
     "TSLAUSDT": (Decimal("0.01"), 42_000, 20.0),
     "NVDAUSDT": (Decimal("0.01"), 18_000, 40.0),
     "EWJUSDT": (Decimal("0.01"), 7_500, 100.0),
+    "QQQUSDT": (Decimal("0.01"), 73_000, 10.0),
+    "AAPLUSDT": (Decimal("0.01"), 25_000, 20.0),
 }
 # TradFi-Perps: kein Spot-Markt (Tageskerzen nur über /fapi), contractType laut Doku;
 # Wert = underlyingType
@@ -56,6 +58,9 @@ TRADFI = {
     "NVDAUSDT": "EQUITY",
     "EWJUSDT": "EQUITY",
 }
+# Wie bei Binance beobachtet: nicht alle TradFi-Kontrakte tragen TRADIFI_PERPETUAL.
+# QQQ: normales PERPETUAL mit Aktien-Underlying; AAPL: gar nicht gekennzeichnet (Config).
+PLAIN_TRADFI = {"QQQUSDT": "EQUITY", "AAPLUSDT": "COIN"}
 
 
 class SimBook:
@@ -366,7 +371,7 @@ class Simulator:
                         "symbol": sym,
                         "status": "TRADING",
                         "contractType": "TRADIFI_PERPETUAL" if sym in TRADFI else "PERPETUAL",
-                        "underlyingType": TRADFI.get(sym, "COIN"),
+                        "underlyingType": TRADFI.get(sym) or PLAIN_TRADFI.get(sym, "COIN"),
                         "filters": [
                             {"filterType": "PRICE_FILTER", "tickSize": str(tick)},
                             {"filterType": "LOT_SIZE", "stepSize": "0.001"},

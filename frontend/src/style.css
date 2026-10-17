@@ -43,7 +43,21 @@ body {
   border-bottom: 1px solid var(--line);
   flex-wrap: nowrap;
   white-space: nowrap;
+  /* kein overflow: hidden – das aufklappende Coin-Menü muss über die Kopfzeile hinausragen */
+  position: relative;
+  z-index: 10;
+}
+
+#bar > * {
+  flex-shrink: 0;
+}
+
+#bar > #perf,
+#bar > #ltinfo {
+  flex-shrink: 1;
+  min-width: 0;
   overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 
@@ -518,21 +532,82 @@ button:hover {
   top: calc(100% + 6px);
   left: 0;
   z-index: 20;
-  width: 470px;
+  display: flex;
+  flex-direction: column;
+  width: 600px;
   max-width: calc(100vw - 24px);
-  padding: 8px;
+  padding: 10px;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 10px;
   background: var(--panel);
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.5);
+}
+
+.picker-pop[hidden] {
+  display: none;
+}
+
+.picker-top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.picker-cats {
+  display: flex;
+  flex: 1;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 8px;
+  background: var(--bg);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.picker-cat {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  padding: 5px 10px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+.picker-cat:hover {
+  color: var(--fg);
+  background: var(--panel-2);
+}
+
+.picker-cat.on {
+  background: var(--panel-2);
+  color: var(--fg);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.picker-cat-n {
+  padding: 0 5px;
+  border-radius: 8px;
+  background: var(--line);
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.picker-cat.on .picker-cat-n {
+  background: var(--accent);
+  color: #1d1e21;
 }
 
 .picker-search {
-  width: 100%;
-  margin-bottom: 6px;
+  width: 150px;
   padding: 6px 8px;
   border: 1px solid var(--line);
-  border-radius: 5px;
+  border-radius: 6px;
   background: var(--bg);
   color: var(--fg);
   font: inherit;
@@ -541,22 +616,55 @@ button:hover {
 .picker-search:focus {
   outline: none;
   border-color: var(--accent);
+  width: 190px;
+}
+
+.picker-sessline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 0 6px 6px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.picker-sessline[hidden] {
+  display: none;
+}
+
+.sess-item .dot {
+  margin-right: 5px;
+}
+
+.sess-item.open .dot {
+  background: var(--up);
+}
+
+.sess-item.ext .dot {
+  background: var(--liq-long);
+}
+
+.sess-item.closed .dot {
+  background: #5a5d63;
 }
 
 .picker-list {
-  max-height: min(60vh, 560px);
+  position: relative;
+  max-height: min(56vh, 480px);
+  min-height: 160px;
   overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .picker-row {
   display: grid;
-  grid-template-columns: 1fr 7.5em 4.8em 5.2em 3.6em;
+  grid-template-columns: 1fr 7.5em 4.8em 5.4em 4.2em;
   gap: 6px;
   align-items: center;
   width: 100%;
-  padding: 5px 6px;
+  padding: 6px 8px;
   border: 1px solid transparent;
-  border-radius: 5px;
+  border-radius: 6px;
   background: transparent;
   color: var(--fg);
   font: inherit;
@@ -565,17 +673,21 @@ button:hover {
 }
 
 .picker-row .sym {
+  display: flex;
+  align-items: center;
+  min-width: 0;
   text-align: left;
   font-weight: bold;
   white-space: nowrap;
+}
+
+.sym-label {
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.picker-row:hover,
 .picker-row.hl {
   background: var(--panel-2);
-  border-color: var(--line);
 }
 
 .picker-row.active {
@@ -583,8 +695,13 @@ button:hover {
 }
 
 .picker-colhead {
+  padding-top: 2px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  margin-bottom: 4px;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 10.5px;
   cursor: default;
 }
 
@@ -592,29 +709,48 @@ button:hover {
   text-align: left;
 }
 
-.picker-colhead:hover {
-  background: transparent;
-  border-color: transparent;
+.sortable {
+  cursor: pointer;
+  user-select: none;
 }
 
-.picker-group {
-  margin: 8px 6px 2px;
-  font-size: 10.5px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
+.sortable:hover,
+.sortable.sorted {
+  color: var(--fg);
+}
+
+.sortable.sorted::after {
+  content: " " attr(data-dir);
+  font-size: 9px;
+}
+
+.cat-tag {
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: var(--line);
   color: var(--muted);
+  font-size: 9.5px;
+  font-weight: normal;
 }
 
-.picker-group.closed {
-  color: var(--liq-long);
+.cat-tag:empty {
+  display: none;
+}
+
+.picker-empty {
+  padding: 24px;
+  text-align: center;
+  color: var(--muted);
 }
 
 .picker-foot {
   margin-top: 6px;
-  padding: 6px 6px 0;
+  padding: 7px 6px 0;
   border-top: 1px solid var(--line);
   font-size: 10.5px;
   color: #80848b;
+  white-space: pre;
 }
 
 /* --- RSI ----------------------------------------------------------------------------- */
