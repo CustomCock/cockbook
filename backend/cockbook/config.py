@@ -10,7 +10,7 @@ from __future__ import annotations
 import ipaddress
 from decimal import Decimal
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -308,7 +308,33 @@ class AppConfig(_Model):
     trading: TradingConfig = Field(default_factory=TradingConfig)
 
 
+def merge_config(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    """Abschnitte (dicts) werden zusammengeführt, alles andere (auch Listen) ersetzt."""
+    out = dict(base)
+    for k, v in override.items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = merge_config(out[k], v)
+        else:
+            out[k] = v
+    return out
+
+
+def local_config_path(path: str | Path) -> Path:
+    """``config.yaml`` -> ``config.local.yaml`` (gitignored, persönliche Einstellungen)."""
+    p = Path(path)
+    return p.with_name(f"{p.stem}.local{p.suffix}")
+
+
 def load_config(path: str | Path) -> AppConfig:
+    """Lädt ``config.yaml`` und legt – falls vorhanden – ``config.local.yaml`` darüber.
+
+    Persönliche Einstellungen (z. B. ``trading.live.trading_enabled: true``) gehören in die
+    lokale Datei: Sie ist gitignored, ``git pull`` kollidiert dann nie mit eigenen Änderungen.
+    """
     with Path(path).open(encoding="utf-8") as f:
         raw = yaml.safe_load(f) or {}
+    local = local_config_path(path)
+    if local.exists():
+        with local.open(encoding="utf-8") as f:
+            raw = merge_config(raw, yaml.safe_load(f) or {})
     return AppConfig.model_validate(raw)

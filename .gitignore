@@ -1,6 +1,9 @@
 # Aufzeichnungen – nie committen
 data/
 
+# Persönliche Einstellungen (überschreiben config.yaml, nie committen)
+config.local.yaml
+
 # Secrets
 .env
 .env.*

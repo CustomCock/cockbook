@@ -50,6 +50,13 @@ make lint      # ruff, mypy, tsc
 make dev       # Backend + Frontend-Dev-Server (http://127.0.0.1:5173)
 ```
 
+### Eigene Einstellungen: `config.local.yaml`
+
+Persönliche Änderungen nicht in `config.yaml` machen, sondern in **`config.local.yaml`** (Vorlage:
+`config.local.example.yaml`). Die Datei wird über `config.yaml` gelegt und nie committet – `git pull`
+kollidiert dann nie mit deinen Einstellungen. Abschnitte werden zusammengeführt, Listen (z. B.
+`exchanges`) komplett ersetzt.
+
 ### Windows 11 (ohne make)
 
 Einmalig in PowerShell installieren, danach PowerShell neu öffnen:
@@ -168,7 +175,7 @@ und TP/SL deines Bitunix-Futures-Kontos – und **echtes Trading** mit derselben
 Klick-Trading und denselben Chart-Linien wie beim Paper-Trading (Market und Limit; Bitunix kennt keine
 Stop-Einstiegsorders). **Achtung: echtes Geld.** Sicherungen:
 
-- Aus, bis du in `config.yaml` `trading.live.trading_enabled: true` setzt – und zusätzlich im Browser
+- Aus, bis du `config.local.example.yaml` nach `config.local.yaml` kopierst (`trading_enabled: true`) – und zusätzlich im Browser
   „Live-Trading freischalten“ klickst (gilt nur für diesen Tab).
 - Vor jeder Order ein Bestätigungsdialog (abschaltbar), Live-Knöpfe gelb umrandet.
 - Vor jeder Order wird geprüft, ob der Coin auf isolierter Margin steht (sonst umgestellt bzw. abgelehnt)

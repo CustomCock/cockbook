@@ -1,0 +1,8 @@
+# Vorlage für persönliche Einstellungen. Kopieren nach config.local.yaml (wird nicht
+# committet) und anpassen. Alles hier überschreibt config.yaml; Abschnitte werden
+# zusammengeführt, Listen (z. B. exchanges) komplett ersetzt.
+# Keine API-Keys hier eintragen – die nur als Umgebungsvariablen.
+
+trading:
+  live:
+    trading_enabled: true     # echte Orders über Bitunix erlauben

@@ -344,7 +344,7 @@ export class TradePanel {
       return;
     }
     if (s.read_only) {
-      this.toast("error", "Live-Trading ist in config.yaml aus (trading.live.trading_enabled)");
+      this.toast("error", "Live-Trading ist aus – in config.local.yaml trading.live.trading_enabled: true setzen");
       return;
     }
     const reducing = op === "cancel" || op === "cancel_all" || op === "close" || op === "close_all";

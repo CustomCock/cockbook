@@ -137,7 +137,7 @@ export class LivePanel {
     for (const w of s.warnings ?? []) r.append(el("div", "trade-warn", w));
     // Freigabe
     if (s.read_only) {
-      r.append(el("div", "live-help", "Nur lesen. Zum Handeln in config.yaml trading.live.trading_enabled: true setzen und das Backend neu starten."));
+      r.append(el("div", "live-help", "Nur lesen. Zum Handeln config.local.example.yaml nach config.local.yaml kopieren (trading_enabled: true) und das Backend neu starten."));
     } else {
       const box = el("div", "live-arm");
       if (this.ctl.unlocked()) {

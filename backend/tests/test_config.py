@@ -57,3 +57,22 @@ def test_json_formatter_includes_extras() -> None:
 def test_setup_logging_sets_level() -> None:
     setup_logging(LoggingConfig(level="WARNING"))
     assert logging.getLogger().level == logging.WARNING
+
+
+def test_local_config_overrides_without_touching_config_yaml(tmp_path: Path) -> None:
+    from cockbook.config import load_config, local_config_path
+
+    main = tmp_path / "config.yaml"
+    main.write_text(
+        "trading:\n  live:\n    trading_enabled: false\n    max_leverage: 100\n"
+        "  paper:\n    start_balance: 5000\n",
+        encoding="utf-8",
+    )
+    assert load_config(main).trading.live.trading_enabled is False
+    local = local_config_path(main)
+    assert local.name == "config.local.yaml"
+    local.write_text("trading:\n  live:\n    trading_enabled: true\n", encoding="utf-8")
+    cfg = load_config(main)
+    assert cfg.trading.live.trading_enabled is True
+    assert cfg.trading.live.max_leverage == 100  # Rest bleibt aus config.yaml
+    assert cfg.trading.paper.start_balance == 5000

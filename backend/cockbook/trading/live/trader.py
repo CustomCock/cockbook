@@ -121,8 +121,8 @@ class LiveTrader:
             return  # nur lesen
         if not self.cfg.trading_enabled:
             raise LiveRejectedError(
-                "Live-Trading ist aus – in config.yaml trading.live.trading_enabled: true setzen "
-                "und das Backend neu starten"
+                "Live-Trading ist aus – in config.local.yaml trading.live.trading_enabled: "
+                "true setzen und das Backend neu starten"
             )
         if op in _RISK_REDUCING:
             return
