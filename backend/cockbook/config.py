@@ -8,6 +8,7 @@ Secrets gehören NICHT hierher, sondern in Umgebungsvariablen/Keyring.
 from __future__ import annotations
 
 import ipaddress
+from decimal import Decimal
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -230,6 +231,42 @@ class RecorderConfig(_Model):
     zstd_level: Annotated[int, Field(ge=1, le=22)] = 9
 
 
+class FeeConfig(_Model):
+    """Gebühren als Anteil (0.0005 = 0,05 %). Eigene Stufe bei der Börse nachsehen."""
+
+    maker: Annotated[Decimal, Field(ge=0, lt=Decimal("0.01"))]
+    taker: Annotated[Decimal, Field(ge=0, lt=Decimal("0.01"))]
+
+
+def _default_fees() -> dict[str, FeeConfig]:
+    # Standardstufe (Stand 2026-10): Binance USDⓈ-M 0,02/0,05 %, Bitunix 0,02/0,06 %
+    return {
+        "binance_usdm": FeeConfig(maker=Decimal("0.0002"), taker=Decimal("0.0005")),
+        "bitunix": FeeConfig(maker=Decimal("0.0002"), taker=Decimal("0.0006")),
+    }
+
+
+class PaperConfig(_Model):
+    """Paper-Trading: simuliertes Konto gegen die echten Orderbücher (keine API-Keys)."""
+
+    enabled: bool = True
+    start_balance: Annotated[Decimal, Field(gt=0)] = Decimal(10_000)
+    default_leverage: Annotated[int, Field(ge=1, le=125)] = 10
+    max_leverage: Annotated[int, Field(ge=1, le=125)] = 50
+    # Risiko-Grenzen (dieselben wie später beim Live-Trading – zum Üben)
+    max_position_usd: Annotated[Decimal, Field(gt=0)] = Decimal(250_000)
+    daily_loss_limit_usd: Annotated[Decimal, Field(ge=0)] = Decimal(0)  # 0 = aus
+    # Wartungsmarge für den Liquidationspreis (isolierte Margin, vereinfacht eine Stufe)
+    maintenance_margin: Annotated[Decimal, Field(ge=0, lt=Decimal("0.5"))] = Decimal("0.005")
+    fees: dict[str, FeeConfig] = Field(default_factory=_default_fees)
+    # Zustand wird höchstens so oft an die Browser geschickt (PnL ändert sich mit jedem Tick)
+    publish_interval_ms: Annotated[int, Field(ge=50)] = 250
+
+
+class TradingConfig(_Model):
+    paper: PaperConfig = Field(default_factory=PaperConfig)
+
+
 class AppConfig(_Model):
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     exchanges: list[ExchangeConfig] = Field(default_factory=list)
@@ -238,6 +275,7 @@ class AppConfig(_Model):
     ui: UiConfig = Field(default_factory=UiConfig)
     history: HistoryConfig = Field(default_factory=HistoryConfig)
     recorder: RecorderConfig = Field(default_factory=RecorderConfig)
+    trading: TradingConfig = Field(default_factory=TradingConfig)
 
 
 def load_config(path: str | Path) -> AppConfig:

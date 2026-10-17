@@ -122,6 +122,24 @@ Die Seitenleiste enthält alle Funktionen zum Ein-/Ausschalten (gelten für alle
   Longs vs Shorts, Taker Buy/Sell, 24h-Statistik, Liquidationen des Gesamtmarkts (sekündlich)
 - **Geplant:** Liquidation Heatmap, Funding-Heatmap, RSI-Heatmap aller Coins, Depth Delta …
 
+**Paper-Trading** (Panel rechts, Knopf „Handel“ oder Taste `T`): simuliertes Futures-Konto gegen die
+echten Orderbücher von Binance bzw. Bitunix – kein Konto, keine API-Keys nötig.
+
+- **Ordermaske:** Market, Limit, Stop (Stop-Market); Menge in Coin oder USDT, 10/25/50/100 % der freien
+  Margin; Hebel; TP/SL direkt an der Order (mit Gewinn/Verlust und Chance/Risiko); Reduce-Only.
+- **Klick-Trading** (Häkchen im Panel, standardmäßig aus): im DOM Klick in BID = Kauf, in ASK = Verkauf
+  (jenseits des Kurses wird daraus ein Stop); im Chart `Strg`+Klick unter dem Kurs = Kauf-Limit, darüber
+  = Verkaufs-Limit. Die Menge kommt aus der Maske.
+- **Im Chart:** Linien für Einstieg (mit PnL), Break-even (inkl. Gebühren), Liquidation, TP/SL und offene
+  Orders. Order- und TP/SL-Linien lassen sich ziehen, × löscht.
+- **Fill-Modell:** Market läuft durchs echte Buch (Slippage). Limit stellt sich hinten in die
+  Warteschlange seines Preises („x vor dir“) und wird erst gefüllt, wenn das Volumen davor gehandelt
+  bzw. gecancelt ist oder der Preis durchläuft. Stop, TP/SL und Liquidation lösen am Mid aus.
+  Isolierte Margin, One-Way-Modus, Gebühren je Börse in `config.yaml`; Funding wird nicht simuliert.
+- **Grenzen** wie später beim Live-Trading: max. Hebel, max. Positionsgröße, optional Tagesverlust-Limit,
+  „Alles schließen“ als Kill-Switch. Konto und Verlauf (CSV-Export) liegen in `data/paper/` und
+  überstehen Neustarts.
+
 Bedienung: Mausrad = Preis-Zoom, Shift+Mausrad (oder Mausrad über der Zeitachse) = Zeit-Zoom,
 Ziehen = verschieben (auch zurück in der Zeit), Doppelklick oder `C` = zurück zu Live mit
 Auto-Zentrierung, `F` = Preisbereich an die sichtbaren Kerzen anpassen, `/` = Coin suchen, `Alt+1…9` / `Alt+←→` = Tabs, `Alt+W` = Tab schließen. Regler „Kontrast“ und „Schwelle“ steuern die Farbskala; Einstellungen werden

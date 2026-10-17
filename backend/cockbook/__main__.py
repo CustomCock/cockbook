@@ -24,6 +24,7 @@ from cockbook.core.eventbus import EventBus
 from cockbook.log import setup_logging
 from cockbook.server.bridge import Bridge
 from cockbook.server.feed import MarketFeed
+from cockbook.trading.paper.service import PaperService
 
 log = logging.getLogger("cockbook")
 
@@ -60,9 +61,18 @@ async def run(cfg: AppConfig, symbol: str | None, token: str | None = None) -> N
             # Wählt das Frontend einen Coin, startet dessen Orderbuch (falls noch nicht aktiv)
             bridge.on_subscribe = manager.activate
             bridge.long_handler = feed.long_request
+            paper = (
+                PaperService(cfg.trading.paper, feed.aggs, bus, bridge, cfg.recorder.data_dir)
+                if cfg.trading.paper.enabled
+                else None
+            )
+            if paper is not None:
+                bridge.paper_handler = paper.handle
             async with asyncio.TaskGroup() as tg:
                 tg.create_task(feed.run(stop))
                 tg.create_task(manager.run(stop))
+                if paper is not None:
+                    tg.create_task(paper.run(stop))
     finally:
         await bridge.stop()
 

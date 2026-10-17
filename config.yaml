@@ -166,3 +166,16 @@ recorder:
   data_dir: data     # gitignored
   flush_interval_s: 5
   zstd_level: 9
+
+trading:
+  paper:                        # Paper-Trading: simuliertes Konto gegen die echten Orderbücher
+    enabled: true
+    start_balance: 10000        # USDT
+    default_leverage: 10
+    max_leverage: 50
+    max_position_usd: 250000    # größte erlaubte Position (Nominalwert)
+    daily_loss_limit_usd: 0     # z. B. 500: danach keine neuen Positionen bis 00:00 UTC (0 = aus)
+    maintenance_margin: 0.005   # für den Liquidationspreis (isolierte Margin)
+    fees:                       # Anteil: 0.0005 = 0,05 % – eigene Gebührenstufe eintragen
+      binance_usdm: {maker: 0.0002, taker: 0.0005}
+      bitunix: {maker: 0.0002, taker: 0.0006}

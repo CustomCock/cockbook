@@ -22,7 +22,7 @@ den paar tausend Leveln eines Krypto-Buchs ist das in reinem Python sehr schnell
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from decimal import Decimal
 from itertools import islice
 
@@ -84,6 +84,13 @@ class OrderBook:
     def side(self, side: Side) -> Mapping[int, Decimal]:
         """Read-only-Sicht auf eine Seite (sortiert nach Preis aufsteigend)."""
         return self._bids if side is Side.BID else self._asks
+
+    def iter_best(self, side: Side) -> Iterator[tuple[int, Decimal]]:
+        """Level einer Seite, beste zuerst (Bid absteigend, Ask aufsteigend)."""
+        book = self._bids if side is Side.BID else self._asks
+        keys = reversed(book.keys()) if side is Side.BID else iter(book.keys())
+        for p in keys:
+            yield p, book[p]
 
     def best_bid(self) -> PriceLevel | None:
         if not self._bids:

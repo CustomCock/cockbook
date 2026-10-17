@@ -28,7 +28,10 @@ import { Sidebar, type CycleChoice } from "./sidebar";
 import { baseSymbol, isLongTab, LONG_SUFFIX, TabBar, TabModel } from "./tabs";
 import { downsample, HeatmapStore, rowsFor, type TradeBin } from "./store";
 import { coinOf, keyFor, venueOf } from "./venue";
-import { panY, priceUnit, recenter, visibleCols, xToCol, yToUnit, zoomX, zoomY, type View } from "./viewport";
+import { clickOrder, tradeLines, type TradeLine } from "./paper";
+import { TradeOverlay } from "./tradeoverlay";
+import { TradePanel, type MarketCtx } from "./tradepanel";
+import { panY, priceUnit, recenter, unitToY, visibleCols, xToCol, yToUnit, zoomX, zoomY, type View } from "./viewport";
 
 takeTokenFromHash();
 const SETTINGS_KEY = "cockbook.settings.v1";
@@ -47,6 +50,10 @@ const LONG_TIER_KEY = "cockbook.longtier.v1";
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const chartEl = $<HTMLElement>("chart");
 const glCanvas = $<HTMLCanvasElement>("gl");
+const tradeCanvas = $<HTMLCanvasElement>("tradeov");
+const tradeOverlay = new TradeOverlay(tradeCanvas);
+/** zählt Änderungen am Paper-Zustand bzw. an gezogenen Linien (neu zeichnen) */
+let tradeVersion = 0;
 const yAxisCanvas = $<HTMLCanvasElement>("yaxis");
 const xAxisCanvas = $<HTMLCanvasElement>("xaxis");
 const rsiCanvas = $<HTMLCanvasElement>("rsi");
@@ -243,6 +250,7 @@ function resize(): void {
   dpr = window.devicePixelRatio || 1;
   const { pw, ph } = plotSize();
   place(glCanvas, 0, 0, pw, ph, dpr * renderScale);
+  place(tradeCanvas, 0, 0, pw, ph, dpr);
   const rh = rsiHeight();
   place(yAxisCanvas, pw, 0, AXIS_W, ph, dpr);
   domCanvas.style.display = features.dom ? "block" : "none";
@@ -307,6 +315,8 @@ tabs.render();
 if (tabModel.active) currentSymbol = baseSymbol(tabModel.active);
 setInterval(() => {
   const now = Date.now();
+  tradePanel.setMarket(marketCtx());
+  domCanvas.style.cursor = tradePanel.clickTrading ? "pointer" : "";
   sidebar.update(now);
   picker.update(now);
   tabs.update();
@@ -319,8 +329,42 @@ domCanvas.addEventListener("click", (e) => {
     domUsd = !domUsd;
     saveJson(DOM_KEY, { usd: domUsd });
     featureVersion++;
+    return;
   }
+  // Klick-Trading: BID-Spalte = kaufen, ASK-Spalte = verkaufen (Preis = Mausposition)
+  const ctx = marketCtx();
+  const { ph } = plotSize();
+  if (!tradePanel.clickTrading || !ctx || e.offsetY >= ph) return;
+  const where = e.offsetX < 74 ? "bid" : e.offsetX < 148 ? "ask" : null;
+  if (!where) return;
+  const price = priceAtY(e.offsetY);
+  if (price === null) return;
+  const { side, kind } = clickOrder(where, price, ctx.bid, ctx.ask);
+  tradePanel.placeAt(side, kind, price);
 });
+
+/** Markt für das Handels-Panel: Symbol, Raster und aktuelles BBO. */
+function marketCtx(): MarketCtx | null {
+  if (!currentSymbol || !inst || !store || store.count === 0) return null;
+  let bid = NaN;
+  let ask = NaN;
+  for (let k = 0; k < Math.min(5, store.count) && (Number.isNaN(bid) || Number.isNaN(ask)); k++) {
+    const i = store.indexAgo(k);
+    bid = store.bestBid[i]!;
+    ask = store.bestAsk[i]!;
+  }
+  if (Number.isNaN(bid) || Number.isNaN(ask)) return null;
+  const step = markets.bySymbol.get(currentSymbol)?.stepSize ?? inst.tickSize;
+  return { symbol: currentSymbol, tick: inst.tickSize, step, bid: bid * inst.tickSize, ask: ask * inst.tickSize };
+}
+
+/** Preis an einer y-Position im Chart (null ohne Instrument). */
+function priceAtY(y: number): number | null {
+  if (!inst) return null;
+  const { ph } = plotSize();
+  return yToUnit(y, view, ph) * inst.bucketTicks * inst.tickSize;
+}
+
 
 function setBadge(id: string, text: string, cls: string): void {
   const el = $<HTMLElement>(id);
@@ -423,6 +467,10 @@ function selectSymbol(sym: string): void {
 const conn = connect(
   wsUrlWithToken,
   {
+    onPaper(m) {
+      tradePanel.onMessage(m);
+      tradeVersion++;
+    },
     onConnection(ok) {
       if (!ok) setBadge("sync", "keine Verbindung", "off");
     },
@@ -561,6 +609,19 @@ const conn = connect(
   () => currentSymbol,
 );
 
+const tradePanel = new TradePanel(
+  $<HTMLElement>("trade"),
+  conn,
+  markets,
+  () => {
+    $<HTMLButtonElement>("tradeBtn").classList.toggle("on", tradePanel.open);
+    resize();
+  },
+  (sym) => activateTab(sym),
+);
+$<HTMLButtonElement>("tradeBtn").classList.toggle("on", tradePanel.open);
+$<HTMLButtonElement>("tradeBtn").addEventListener("click", () => tradePanel.toggle());
+
 const longView = new LongView($<HTMLElement>("longchart"), markets, conn, scaleSettings, (t) => {
   longTier = t;
   saveJson(LONG_TIER_KEY, { tier: t });
@@ -650,12 +711,52 @@ chartEl.addEventListener(
 );
 
 let drag: { x: number; y: number; view: View } | null = null;
+/** gezogene Handels-Linie (Order/TP/SL) */
+let lineDrag: TradeLine | null = null;
 chartEl.addEventListener("pointerdown", (e) => {
+  // DOM-Spalte hat eigene Klicks (Kopf: Einheit, Klick-Trading) – nicht einfangen, sonst
+  // käme der click nie am DOM-Canvas an
+  if (e.target === domCanvas) return;
+  const p = localPos(e);
+  const { pw, ph } = plotSize();
+  if (e.button === 0 && p.x < pw && p.y < ph) {
+    const hit = tradeOverlay.hit(p.x, p.y);
+    if (hit?.cancel && hit.line.cancel) {
+      tradePanel.cancelLine(hit.line.cancel);
+      return;
+    }
+    if (hit?.line.drag) {
+      lineDrag = hit.line;
+      tradeOverlay.dragging = { line: hit.line, price: hit.line.price };
+      chartEl.setPointerCapture(e.pointerId);
+      return;
+    }
+    const ctx = marketCtx();
+    if ((e.ctrlKey || e.metaKey) && tradePanel.clickTrading && ctx) {
+      const price = priceAtY(p.y);
+      if (price !== null) {
+        const { side, kind } = clickOrder("chart", price, ctx.bid, ctx.ask);
+        tradePanel.placeAt(side, kind, price);
+      }
+      return;
+    }
+  }
   drag = { x: e.clientX, y: e.clientY, view };
   chartEl.setPointerCapture(e.pointerId);
 });
 chartEl.addEventListener("pointermove", (e) => {
   mouse = localPos(e);
+  if (lineDrag && tradeOverlay.dragging) {
+    const price = priceAtY(mouse.y);
+    if (price !== null) tradeOverlay.dragging = { line: lineDrag, price };
+    tradeVersion++;
+    updateHover();
+    return;
+  }
+  if (!drag) {
+    const hit = mouse.x < plotSize().pw ? tradeOverlay.hit(mouse.x, mouse.y) : null;
+    chartEl.style.cursor = hit ? (hit.cancel ? "pointer" : hit.line.drag ? "ns-resize" : "") : "";
+  }
   if (drag && store) {
     const { ph } = plotSize();
     const dy = e.clientY - drag.y;
@@ -669,7 +770,16 @@ chartEl.addEventListener("pointermove", (e) => {
   }
   updateHover();
 });
-chartEl.addEventListener("pointerup", () => (drag = null));
+chartEl.addEventListener("pointerup", () => {
+  drag = null;
+  if (lineDrag && tradeOverlay.dragging && lineDrag.drag) {
+    const moved = Math.abs(tradeOverlay.dragging.price - lineDrag.price) > (inst?.tickSize ?? 0) / 2;
+    if (moved) tradePanel.dragTo(lineDrag.drag, tradeOverlay.dragging.price);
+  }
+  lineDrag = null;
+  tradeOverlay.dragging = null;
+  tradeVersion++;
+});
 chartEl.addEventListener("pointerleave", () => {
   mouse = null;
   updateHover();
@@ -681,6 +791,7 @@ window.addEventListener("keydown", (e) => {
   if (longActive) return;
   if (e.key === "c" || e.key === "C") goLive();
   if (e.key === "f" || e.key === "F") fitToCandles();
+  if ((e.key === "t" || e.key === "T") && !e.ctrlKey && !e.metaKey && !e.altKey) tradePanel.toggle();
 });
 
 /**
@@ -828,6 +939,18 @@ function render(): void {
     }
   }
   drawPriceAxis(yAxisCanvas, dpr, store, view, inst, ph);
+  const ps = tradePanel.state;
+  if (inst && ps && currentSymbol) {
+    const i = inst;
+    tradeOverlay.draw(
+      dpr,
+      pw,
+      ph,
+      tradeLines(currentSymbol, ps.positions, ps.orders),
+      (price) => unitToY(price / i.tickSize / i.bucketTicks, view, ph),
+      (price) => formatPrice(Math.round(price / i.tickSize), i),
+    );
+  } else tradeOverlay.draw(dpr, pw, ph, [], () => 0, String);
   if (features.dom) {
     const data = store && inst ? buildDomRows(store, view, pw, ph, inst.bucketTicks) : null;
     drawDom(domCanvas, dpr, data, view, ph, inst?.bucketTicks ?? 1, { usd: domUsd, tickSize: inst?.tickSize ?? 1 });
@@ -845,7 +968,7 @@ function render(): void {
 let lastSig: unknown[] = [];
 /** Neu zeichnen nur, wenn sich etwas geändert hat (Daten, Sicht, Skala, Größe, Schalter). */
 function changed(): boolean {
-  const sig = [dataVersion, view, range, sizeVersion, hello, featureVersion, domUsd];
+  const sig = [dataVersion, view, range, sizeVersion, hello, featureVersion, domUsd, tradeVersion];
   const diff = sig.some((v, i) => v !== lastSig[i]);
   lastSig = sig;
   return diff;

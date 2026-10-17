@@ -32,6 +32,8 @@ export interface SymbolInfo {
   symbol: string;
   exchange?: string;
   tick_size?: string;
+  /** Mengen-Schrittweite (kleinste Ordermenge) */
+  step_size?: string;
   kind?: "crypto" | "tradfi";
   /** crypto | stock | etf | commodity | fx | tradfi */
   category?: Category;
@@ -108,6 +110,80 @@ export interface Handlers {
   /** Server lehnt ab (Token fehlt/falsch): nicht automatisch neu verbinden */
   onAuthError(): void;
   onConnection(connected: boolean): void;
+  /** Paper-Trading: Zustand, Antwort auf eine Anfrage, Hinweis (z. B. TP ausgeführt) */
+  onPaper?(m: PaperMessage): void;
+}
+
+export type PaperMessage =
+  | PaperState
+  | { type: "paper_result"; req: number | null; ok: boolean; message: string }
+  | { type: "paper_event"; level: "ok" | "error"; message: string };
+
+export interface PaperPosition {
+  symbol: string;
+  qty: number; // > 0 long, < 0 short
+  entry: number;
+  mark: number;
+  upnl: number;
+  roe: number;
+  leverage: number;
+  margin: number;
+  liq: number;
+  tp: number | null;
+  sl: number | null;
+  opened: number;
+  breakeven: number;
+}
+
+export interface PaperOrder {
+  id: string;
+  symbol: string;
+  side: "buy" | "sell";
+  kind: "market" | "limit" | "stop";
+  qty: number;
+  filled: number;
+  price: number | null;
+  trigger: number | null;
+  reduce_only: boolean;
+  tp: number | null;
+  sl: number | null;
+  queue: number;
+  created: number;
+}
+
+export interface PaperTrade {
+  symbol: string;
+  side: "long" | "short";
+  qty: number;
+  entry: number;
+  exit: number;
+  pnl: number;
+  fees: number;
+  opened: number;
+  closed: number;
+  reason: string;
+}
+
+export interface PaperState {
+  type: "paper_state";
+  account: {
+    wallet: number;
+    equity: number;
+    upnl: number;
+    margin: number;
+    available: number;
+    day_realized: number;
+    start: number;
+    max_leverage: number;
+    default_leverage: number;
+    loss_limit: number;
+    loss_limit_hit: boolean;
+  };
+  leverage: Record<string, number>;
+  positions: PaperPosition[];
+  orders: PaperOrder[];
+  fills: { ts: number; order: string; symbol: string; side: "buy" | "sell"; qty: number; price: number; fee: number; liq: string; realized: number; reason: string }[];
+  trades: PaperTrade[];
 }
 
 /** float32-LE-Bytes -> Float32Array. Kopie nötig: msgpack liefert eine Sicht mit
@@ -163,6 +239,8 @@ export interface Connection {
   longOpen(symbol: string, tier: string): void;
   longKlines(symbol: string, tier: string): void;
   longOff(): void;
+  /** Paper-Trading-Anfrage; Rückgabe = Anfrage-Nummer (kommt im `paper_result` zurück) */
+  paper(op: string, payload?: Record<string, unknown>): number;
   /** Sofort neu verbinden (z. B. nachdem ein Token eingegeben wurde) */
   reconnect(): void;
   close(): void;
@@ -178,6 +256,7 @@ export function connect(url: () => string, h: Handlers, initialSymbol: () => str
   let delay = 500;
   // Nach einem Reconnect die Langzeit-Ansicht neu anfordern
   let longSub: { symbol: string; tier: string } | null = null;
+  let paperReq = 0;
 
   const send = (obj: unknown) => {
     if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
@@ -200,6 +279,7 @@ export function connect(url: () => string, h: Handlers, initialSymbol: () => str
         else if (msg.type === "status") h.onStatus(msg as Status);
         else if (msg.type === "symbols") h.onSymbols(msg as Symbols);
         else if (msg.type === "long_hello" || msg.type === "long_ready") h.onLong(msg as LongMessage);
+        else if (msg.type.startsWith("paper_")) h.onPaper?.(msg as PaperMessage);
       } else {
         const f = decode(new Uint8Array(ev.data as ArrayBuffer)) as BinaryFrame | Extract<LongMessage, { t: string }>;
         if (f.t === "lc" || f.t === "lk") h.onLong(f);
@@ -230,6 +310,11 @@ export function connect(url: () => string, h: Handlers, initialSymbol: () => str
       send({ type: "long", symbol, tier });
     },
     longKlines: (symbol: string, tier: string) => send({ type: "long_klines", symbol, tier }),
+    paper: (op: string, payload: Record<string, unknown> = {}) => {
+      const req = ++paperReq;
+      send({ type: "paper", op, req, ...payload });
+      return req;
+    },
     longOff: () => {
       longSub = null;
       send({ type: "long_off" });

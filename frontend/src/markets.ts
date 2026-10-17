@@ -20,6 +20,7 @@ export interface Liq {
 export interface MarketState {
   symbol: string;
   tickSize: number | null;
+  stepSize: number | null;
   decimals: number;
   mark?: Extract<StatFrame, { t: "mark" }>;
   ticker?: Extract<StatFrame, { t: "tick" }>;
@@ -62,7 +63,7 @@ export class Markets {
   ensure(symbol: string, tickSize?: string): MarketState {
     let m = this.bySymbol.get(symbol);
     if (!m) {
-      m = { symbol, tickSize: null, decimals: 2, oiHist: [], kind: "crypto", category: "crypto", market: null, label: symbol.replace(/USDT$/, "") };
+      m = { symbol, tickSize: null, stepSize: null, decimals: 2, oiHist: [], kind: "crypto", category: "crypto", market: null, label: symbol.replace(/USDT$/, "") };
       this.bySymbol.set(symbol, m);
     }
     if (tickSize) {
@@ -74,6 +75,7 @@ export class Markets {
 
   setInfo(info: SymbolInfo): void {
     const m = this.ensure(info.symbol, info.tick_size);
+    if (info.step_size) m.stepSize = Number(info.step_size);
     if (info.kind) m.kind = info.kind;
     if (info.category) m.category = info.category;
     else if (info.kind === "tradfi") m.category = "tradfi";

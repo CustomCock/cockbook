@@ -234,6 +234,7 @@ class MarketFeed:
                 "exchange": e.exchange,
                 "base": e.symbol,
                 "tick_size": str(e.tick_size),
+                "step_size": str(e.step_size),
                 "kind": e.kind,
                 "category": e.category,
                 "market": e.market or "",

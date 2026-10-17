@@ -26,6 +26,7 @@ import json
 import logging
 from collections import deque
 from collections.abc import Awaitable, Callable
+from typing import Any
 from urllib.parse import urlsplit
 
 from aiohttp import WSMsgType, web
@@ -100,6 +101,10 @@ class Bridge:
         # Liefert die Frames einer Langzeit-Anfrage (Symbol, Stufe, "all" | "klines")
         self.long_handler: Callable[[str, str, str], Awaitable[list[Frame]]] | None = None
         self._tasks: set[asyncio.Task[None]] = set()
+        # Paper-Trading: Anfrage -> Antwort an den Absender
+        self.paper_handler: Callable[[dict[str, Any]], dict[str, Any]] | None = None
+        # Zustand für alle Clients (z. B. Paper-Konto), auch für neu verbundene
+        self._shared: dict[str, str] = {}
 
     @property
     def client_count(self) -> int:
@@ -165,6 +170,15 @@ class Bridge:
             if c.long_sub == key:
                 c.put(frame)
 
+    def set_shared(self, key: str, text: str) -> None:
+        """Zustand, den alle Clients haben sollen (neue bekommen ihn beim Verbinden)."""
+        self._shared[key] = text
+        self.broadcast(text)
+
+    def broadcast(self, frame: Frame) -> None:
+        for c in self._clients:
+            c.put(frame)
+
     def watches_tier(self, symbol: str, tier: str) -> bool:
         """Sieht gerade jemand diese Langzeit-Stufe an? (vorläufige Spalten nur dann bauen)"""
         return any(c.long_sub == (symbol, tier) for c in self._clients)
@@ -194,6 +208,8 @@ class Bridge:
     def _send_base_state(self, client: _Client) -> None:
         """Symbolliste + letzte Kennzahlen aller Coins."""
         client.put(self._symbols_msg())
+        for text in self._shared.values():
+            client.put(text)
         for frame in self._latest_stats.values():
             client.put(frame)
         for frame in self._recent_liqs:
@@ -310,6 +326,15 @@ class Bridge:
                 )
         elif msg.get("type") == "long_off":
             client.long_sub = None
+        elif msg.get("type") == "paper" and self.paper_handler is not None:
+            try:
+                reply = self.paper_handler(msg)
+            except Exception:
+                # Programmfehler: Verbindung nicht abreißen lassen, Nutzer informieren
+                log.exception("paper request failed", extra={"op": msg.get("op")})
+                reply = {"type": "paper_result", "req": msg.get("req"), "ok": False,
+                         "message": "interner Fehler – siehe Backend-Log"}  # fmt: skip
+            client.put(json.dumps(reply))
 
     def _spawn(self, coro: Awaitable[None]) -> None:
         task = asyncio.ensure_future(coro)
