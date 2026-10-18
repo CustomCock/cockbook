@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "cockbook": {
+      "type": "stdio",
+      "command": "uv",
+      "args": ["run", "--directory", "backend", "python", "-m", "cockbook.mcp_server"]
+    }
+  }
+}

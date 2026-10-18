@@ -22,7 +22,9 @@ from cockbook.app import SourceManager, configured_symbols, install_stop_signals
 from cockbook.config import AppConfig, load_config
 from cockbook.core.eventbus import EventBus
 from cockbook.log import setup_logging
+from cockbook.server.agent_api import AgentApi
 from cockbook.server.bridge import Bridge
+from cockbook.server.drawings import DrawingStore
 from cockbook.server.feed import MarketFeed
 from cockbook.trading.live.bitunix_client import Credentials
 from cockbook.trading.live.service import LiveAccountService
@@ -63,6 +65,10 @@ async def run(cfg: AppConfig, symbol: str | None, token: str | None = None) -> N
             # Wählt das Frontend einen Coin, startet dessen Orderbuch (falls noch nicht aktiv)
             bridge.on_subscribe = manager.activate
             bridge.long_handler = feed.long_request
+            # Zeichnungen (je Coin gespeichert) und Abfragen für Claude (MCP-Erweiterung)
+            drawings = DrawingStore(cfg.recorder.data_dir / "drawings", cfg.agent)
+            bridge.draw_handler = drawings.handle
+            bridge.query_handler = AgentApi(feed, cfg.agent).handle
             paper = (
                 PaperService(cfg.trading.paper, feed.aggs, bus, bridge, cfg.recorder.data_dir)
                 if cfg.trading.paper.enabled

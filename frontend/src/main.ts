@@ -32,6 +32,10 @@ import { clickOrder, type TradeLine } from "./paper";
 import { TradeOverlay } from "./tradeoverlay";
 import { TradePanel, type MarketCtx } from "./tradepanel";
 import { panY, priceUnit, recenter, unitToY, visibleCols, xToCol, yToUnit, zoomX, zoomY, type View } from "./viewport";
+import { DrawingController } from "./drawings/controller";
+import type { Ctx as DrawCtx } from "./drawings/geom";
+import type { Drawing } from "./drawings/model";
+import { DrawToolbar } from "./drawings/toolbar";
 
 takeTokenFromHash();
 const SETTINGS_KEY = "cockbook.settings.v1";
@@ -51,6 +55,9 @@ const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as 
 const chartEl = $<HTMLElement>("chart");
 const glCanvas = $<HTMLCanvasElement>("gl");
 const tradeCanvas = $<HTMLCanvasElement>("tradeov");
+const drawCanvas = $<HTMLCanvasElement>("drawov");
+const chartRow = $<HTMLElement>("chartrow");
+const drawStyleEl = $<HTMLElement>("drawstyle");
 const tradeOverlay = new TradeOverlay(tradeCanvas);
 /** zählt Änderungen am Paper-Zustand bzw. an gezogenen Linien (neu zeichnen) */
 let tradeVersion = 0;
@@ -251,6 +258,7 @@ function resize(): void {
   const { pw, ph } = plotSize();
   place(glCanvas, 0, 0, pw, ph, dpr * renderScale);
   place(tradeCanvas, 0, 0, pw, ph, dpr);
+  place(drawCanvas, 0, 0, pw, ph, dpr);
   const rh = rsiHeight();
   place(yAxisCanvas, pw, 0, AXIS_W, ph, dpr);
   domCanvas.style.display = features.dom ? "block" : "none";
@@ -396,6 +404,7 @@ function openLong(sym: string): void {
   tabs.render();
   longActive = true;
   chartEl.hidden = true;
+  chartRow.hidden = true;
   longView.setLayers(longLayers());
   longView.open(sym, longTier);
   sidebar.setMode("long", longTier);
@@ -410,6 +419,7 @@ function leaveLong(): void {
   longActive = false;
   longView.stop();
   chartEl.hidden = false;
+  chartRow.hidden = false;
   sidebar.setMode("live");
   resize();
   dataVersion++;
@@ -420,6 +430,7 @@ function selectSymbol(sym: string): void {
   tabs.render();
   const wasLong = longActive;
   leaveLong();
+  drawCtl.setSymbol(sym);
   if (sym === currentSymbol && store) {
     if (wasLong) {
       sidebar.setActive(sym);
@@ -481,6 +492,10 @@ const conn = connect(
     },
     onConnection(ok) {
       if (!ok) setBadge("sync", "keine Verbindung", "off");
+      else if (drawCtl.key) conn.draw("load", drawCtl.key);
+    },
+    onDrawings(m) {
+      drawCtl.onServer(m.key, m.items as Drawing[]);
     },
     onSymbols(s) {
       for (const info of s.symbols) markets.setInfo(info);
@@ -630,6 +645,72 @@ const tradePanel = new TradePanel(
 $<HTMLButtonElement>("tradeBtn").classList.toggle("on", tradePanel.open);
 $<HTMLButtonElement>("tradeBtn").addEventListener("click", () => tradePanel.toggle());
 
+// --- Zeichenwerkzeuge ------------------------------------------------------------------------
+
+let drawToolbar: DrawToolbar | null = null;
+const drawCtl = new DrawingController(
+  {
+    put: (key, d) => conn.draw("put", key, { item: d }),
+    remove: (key, id) => conn.draw("delete", key, { id }),
+    clear: (key) => conn.draw("clear", key),
+    load: (key) => conn.draw("load", key),
+  },
+  (t0, t1, p0, p1) => zoomToRect(t0, t1, p0, p1),
+  () => drawToolbar?.refresh(),
+);
+drawToolbar = new DrawToolbar($<HTMLElement>("drawbar"), drawStyleEl, drawCtl, () => tradeVersion++);
+
+/**
+ * Umrechnung Zeit/Preis <-> Pixel für die Zeichnungen. Dieselbe Zeitachse wie Kerzen und
+ * Heatmap (rechte Kante = neueste Spalte minus offset), fraktional statt auf Spalten gerundet.
+ */
+function drawCtx(): DrawCtx | null {
+  if (!store || !inst || !hello || store.count === 0) return null;
+  const { pw, ph } = plotSize();
+  const latest = store.ts[store.latest]!;
+  const iv = hello.interval_ms;
+  const i = inst;
+  const s = store;
+  const v = view;
+  const unit = i.tickSize * i.bucketTicks;
+  return {
+    toX: (t) => pw - ((latest - t) / iv - v.offset) * v.colWidth,
+    toT: (x) => latest - ((pw - x) / v.colWidth + v.offset) * iv,
+    toY: (p) => unitToY(p / unit, v, ph),
+    toP: (y) => yToUnit(y, v, ph) * unit,
+    pw,
+    ph,
+    interval: iv,
+    bars: candles.all(),
+    trades: (t0, t1) => {
+      const out: { p: number; q: number }[] = [];
+      for (let k = 0; k < s.count; k++) {
+        const idx = s.indexAgo(k);
+        const ts = s.ts[idx]!;
+        if (ts < t0) break;
+        if (ts > t1) continue;
+        for (const b of s.trades[idx] ?? []) out.push({ p: b.vwapTicks * i.tickSize, q: b.qty });
+      }
+      return out;
+    },
+    fmtP: (p) => formatPrice(Math.round(p / i.tickSize), i),
+    fmtT: (t) => timeLabel(t, true),
+    tick: i.tickSize,
+  };
+}
+
+/** Zoom-Werkzeug: aufgezogenes Rechteck (Zeit/Preis) wird die neue Sicht. */
+function zoomToRect(t0: number, t1: number, p0: number, p1: number): void {
+  if (!store || !inst || !hello || store.count === 0 || t1 <= t0 || p1 <= p0) return;
+  const { pw } = plotSize();
+  const latest = store.ts[store.latest]!;
+  const unit = inst.tickSize * inst.bucketTicks;
+  const colWidth = pw / ((t1 - t0) / hello.interval_ms);
+  view = zoomX({ ...view, colWidth: 1 }, colWidth);
+  const offset = Math.min(Math.max(Math.round((latest - t1) / hello.interval_ms), 0), maxOffset());
+  view = { ...view, offset, autoCenter: false, yLo: p0 / unit, yHi: p1 / unit };
+}
+
 const longView = new LongView($<HTMLElement>("longchart"), markets, conn, scaleSettings, (t) => {
   longTier = t;
   saveJson(LONG_TIER_KEY, { tier: t });
@@ -721,14 +802,23 @@ chartEl.addEventListener(
 let drag: { x: number; y: number; view: View } | null = null;
 /** gezogene Handels-Linie (Order/TP/SL) */
 let lineDrag: TradeLine | null = null;
+/** Maus gehört gerade den Zeichenwerkzeugen (Punkt setzen, Zeichnung ziehen, messen) */
+let drawDrag = false;
 chartEl.addEventListener("pointerdown", (e) => {
   // DOM-Spalte hat eigene Klicks (Kopf: Einheit, Klick-Trading) – nicht einfangen, sonst
   // käme der click nie am DOM-Canvas an
-  if (e.target === domCanvas) return;
+  if (e.target === domCanvas || drawStyleEl.contains(e.target as Node)) return;
   const p = localPos(e);
   const { pw, ph } = plotSize();
+  const dctx = drawCtx();
   if (e.button === 0 && p.x < pw && p.y < ph) {
-    const hit = tradeOverlay.hit(p.x, p.y);
+    // Aktives Zeichenwerkzeug hat Vorrang vor Handelslinien und Verschieben
+    if (dctx && drawCtl.busy && drawCtl.pointerDown(dctx, p.x, p.y, e)) {
+      drawDrag = true;
+      chartEl.setPointerCapture(e.pointerId);
+      return;
+    }
+    const hit = drawCtl.hideTrading ? null : tradeOverlay.hit(p.x, p.y);
     if (hit?.cancel && hit.line.cancel) {
       tradePanel.cancelLine(hit.line.cancel);
       return;
@@ -748,6 +838,11 @@ chartEl.addEventListener("pointerdown", (e) => {
       }
       return;
     }
+    if (dctx && drawCtl.pointerDown(dctx, p.x, p.y, e)) {
+      drawDrag = true;
+      chartEl.setPointerCapture(e.pointerId);
+      return;
+    }
   }
   drag = { x: e.clientX, y: e.clientY, view };
   chartEl.setPointerCapture(e.pointerId);
@@ -761,9 +856,22 @@ chartEl.addEventListener("pointermove", (e) => {
     updateHover();
     return;
   }
+  const dctx = drawCtx();
+  if (dctx && drawCtl.pointerMove(dctx, mouse.x, mouse.y, e)) {
+    updateHover();
+    return;
+  }
   if (!drag) {
-    const hit = mouse.x < plotSize().pw ? tradeOverlay.hit(mouse.x, mouse.y) : null;
-    chartEl.style.cursor = hit ? (hit.cancel ? "pointer" : hit.line.drag ? "ns-resize" : "") : "";
+    const inPlot = mouse.x < plotSize().pw;
+    const hit = inPlot && !drawCtl.hideTrading ? tradeOverlay.hit(mouse.x, mouse.y) : null;
+    const over = inPlot && !!dctx && drawCtl.hoverHit(dctx, mouse.x, mouse.y);
+    chartEl.style.cursor = hit
+      ? hit.cancel
+        ? "pointer"
+        : hit.line.drag
+          ? "ns-resize"
+          : ""
+      : drawCtl.cssCursor(over);
   }
   if (drag && store) {
     const { ph } = plotSize();
@@ -778,8 +886,14 @@ chartEl.addEventListener("pointermove", (e) => {
   }
   updateHover();
 });
-chartEl.addEventListener("pointerup", () => {
+chartEl.addEventListener("pointerup", (e) => {
   drag = null;
+  if (drawDrag) {
+    drawDrag = false;
+    const dctx = drawCtx();
+    const p = localPos(e);
+    if (dctx) drawCtl.pointerUp(dctx, p.x, p.y);
+  }
   if (lineDrag && tradeOverlay.dragging && lineDrag.drag) {
     const moved = Math.abs(tradeOverlay.dragging.price - lineDrag.price) > (inst?.tickSize ?? 0) / 2;
     if (moved) tradePanel.dragTo(lineDrag.drag, tradeOverlay.dragging.price);
@@ -792,11 +906,25 @@ chartEl.addEventListener("pointerleave", () => {
   mouse = null;
   updateHover();
 });
-chartEl.addEventListener("dblclick", goLive);
+chartEl.addEventListener("dblclick", (e) => {
+  if (drawStyleEl.contains(e.target as Node)) return;
+  if (drawCtl.doubleClick()) return;
+  // Doppelklick auf eine Zeichnung soll nicht zur Gegenwart springen
+  const dctx = drawCtx();
+  const p = localPos(e);
+  if (dctx && drawCtl.hoverHit(dctx, p.x, p.y)) return;
+  goLive();
+});
 $<HTMLButtonElement>("live").addEventListener("click", goLive);
 window.addEventListener("keydown", (e) => {
   if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
   if (longActive) return;
+  if (e.target instanceof HTMLTextAreaElement || (e.target instanceof HTMLElement && e.target.closest("#trade"))) return;
+  if (drawCtl.key_(e)) {
+    e.preventDefault();
+    return;
+  }
+  if (e.ctrlKey || e.metaKey) return;
   if (e.key === "c" || e.key === "C") goLive();
   if (e.key === "f" || e.key === "F") fitToCandles();
   if ((e.key === "t" || e.key === "T") && !e.ctrlKey && !e.metaKey && !e.altKey) tradePanel.toggle();
@@ -946,8 +1074,11 @@ function render(): void {
       prims.draw(PRIM.DIAMOND, vLiqs.data, vLiqs.n, pw, ph, px);
     }
   }
+  const dctx = drawCtx();
+  if (dctx) drawCtl.draw(drawCanvas, dpr, dctx);
+  else drawCanvas.getContext("2d")!.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
   drawPriceAxis(yAxisCanvas, dpr, store, view, inst, ph);
-  if (inst && currentSymbol && tradePanel.open) {
+  if (inst && currentSymbol && tradePanel.open && !drawCtl.hideTrading) {
     const i = inst;
     tradeOverlay.draw(
       dpr,
@@ -975,7 +1106,7 @@ function render(): void {
 let lastSig: unknown[] = [];
 /** Neu zeichnen nur, wenn sich etwas geändert hat (Daten, Sicht, Skala, Größe, Schalter). */
 function changed(): boolean {
-  const sig = [dataVersion, view, range, sizeVersion, hello, featureVersion, domUsd, tradeVersion];
+  const sig = [dataVersion, view, range, sizeVersion, hello, featureVersion, domUsd, tradeVersion, drawCtl.version];
   const diff = sig.some((v, i) => v !== lastSig[i]);
   lastSig = sig;
   return diff;
@@ -990,7 +1121,8 @@ let frames = 0;
 
 function frame(now: number): void {
   requestAnimationFrame(frame);
-  if (!continuous && !changed()) return;
+  // Effekt-Cursor (Laserpointer, Glitzerspur) verblassen -> solange laufend zeichnen
+  if (!continuous && !changed() && !drawCtl.animating) return;
   const t0 = performance.now();
   render();
   if (mouse) updateHover(); // Tooltip-Wert ändert sich mit neuen Spalten

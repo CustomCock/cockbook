@@ -201,6 +201,39 @@ Stop-Einstiegsorders). **Achtung: echtes Geld.** Sicherungen:
    Browser (dort steht nur `Key …1234`).
 3. CockBook erwartet **One-Way-Modus** und **isolierte Margin** und warnt, wenn das Konto anders steht.
 
+**Zeichenwerkzeuge** (Leiste links am Chart, Umfang orientiert an TradingView): rund 85 Werkzeuge in
+sechs Gruppen – Linien & Kanäle (Trend, Strahl, horizontal/vertikal, parallel, Regression, Pitchforks),
+Fibonacci & Gann (Retracement, Extension, Kanal, Zeitzonen, Fächer, Kreise, Spirale, Bögen, Gann-Box/-Fächer),
+Muster & Zyklen (XABCD, Cypher, SKS, ABCD, Elliott-Wellen, Zeitzyklen, Sinus), Prognose & Messen
+(Long/Short-Position, Anchored VWAP, Volumenprofil, Preis-/Zeitbereich, Ghost Feed), Formen & Pinsel,
+Text & Notizen. Dazu: Cursor-Arten (inkl. Laserpointer und Radierer), Messen (`Shift`+Ziehen), Zoom-Rechteck,
+Magnet (rastet an O/H/L/C der 1m-Kerzen ein), Weiterzeichnen, alles sperren/ausblenden, Objektliste,
+Stil-Leiste der ausgewählten Zeichnung (Farbe, Linie, Füllung, Stufen, Text), `Strg+Z`/`Strg+Y`,
+`Strg+C`/`Strg+V`, `Entf`. Zeichnungen hängen an Zeit + Preis, gelten je Coin auf allen Börsen und liegen im
+Backend (`data/drawings/`) – jeder offene Tab sieht dieselben, und Claude kann sie lesen und setzen.
+
+**Claude-Erweiterung (MCP):** Claude Desktop oder Claude Code können auf dein laufendes CockBook
+zugreifen – Orderbuch-Wände und Ungleichgewicht, Trade-Delta und große Trades, Kerzen, Funding/OI,
+Paper- und Live-Konto lesen, Zeichnungen in den Chart setzen (markiert mit 🤖) und Paper-Orders
+platzieren (jede mit Rückfrage). **Echte Orders sind über Claude gesperrt** – der MCP-Server schickt
+keine Live-Nachrichten; echtes Trading bleibt im Browser mit Freischaltung und Bestätigung.
+Voraussetzung: CockBook läuft (`make dev` bzw. `start.bat`).
+
+- *Claude Code* (im cockbook-Ordner): die Datei `.mcp.json` ist schon da – beim Start von `claude`
+  die Freigabe bestätigen. Oder global: `claude mcp add cockbook -- uv run --directory /pfad/zu/cockbook/backend python -m cockbook.mcp_server`
+- *Claude Desktop* (Erweiterung): `npx @anthropic-ai/mcpb pack extension cockbook.mcpb`, dann die
+  Datei per Doppelklick bzw. Einstellungen → Erweiterungen installieren und den cockbook-Ordner wählen.
+- *Claude Desktop* (von Hand): in `claude_desktop_config.json` (macOS `~/Library/Application Support/Claude/`,
+  Windows `%APPDATA%\Claude\`) eintragen:
+
+  ```json
+  { "mcpServers": { "cockbook": { "command": "uv",
+      "args": ["run", "--directory", "C:\\pfad\\zu\\cockbook\\backend", "python", "-m", "cockbook.mcp_server"] } } }
+  ```
+
+Dann z. B. fragen: „Wo liegen bei BTC die größten Bid-Wände im Bereich ±1 % – zeichne sie als
+horizontale Linien ein“ oder „Wie war das Delta der letzten 15 Minuten auf Binance vs. Bitunix?“
+
 Bedienung: Mausrad = Preis-Zoom, Shift+Mausrad (oder Mausrad über der Zeitachse) = Zeit-Zoom,
 Ziehen = verschieben (auch zurück in der Zeit), Doppelklick oder `C` = zurück zu Live mit
 Auto-Zentrierung, `F` = Preisbereich an die sichtbaren Kerzen anpassen, `/` = Coin suchen, `Alt+1…9` / `Alt+←→` = Tabs, `Alt+W` = Tab schließen. Regler „Kontrast“ und „Schwelle“ steuern die Farbskala; Einstellungen werden

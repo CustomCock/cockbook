@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections import deque
 from decimal import Decimal
 from pathlib import Path
 
@@ -105,6 +106,7 @@ class MarketFeed:
         archive_dir: Path | None = None,
         klines: BinanceKlines | None = None,
         bitunix_klines: BitunixKlines | None = None,
+        tape_trades: int = 50_000,
     ) -> None:
         """``symbols``: Symbol -> feste Bucket-Größe in Ticks oder None (automatisch).
 
@@ -131,6 +133,10 @@ class MarketFeed:
         self._candle_dirty: dict[str, tuple[CandleBar, bool]] = {}
         self._resyncs: dict[str, int] = {}
         self._long: dict[str, dict[str, LongTermAccumulator]] = {}
+        # Für Abfragen (Claude/MCP): letzte Trades und letzte Kennzahlen je Symbol
+        self._tape_len = tape_trades
+        self.tape: dict[str, deque[Trade]] = {}
+        self.stats: dict[str, dict[str, Event]] = {}
         for sym, bt in symbols.items():
             self._add_symbol(sym, bt)
         # Langzeit-Heatmap: Stufen, Archiv auf Platte (None = aus), Kerzen auf Anfrage
@@ -158,6 +164,7 @@ class MarketFeed:
             self._encoders[sym] = ColumnDeltaEncoder(self.cfg.keyframe_every_columns)
             self._candles[sym] = {}
             self._resyncs[sym] = 0
+            self.tape[sym] = deque(maxlen=self._tape_len)
             self._long[sym] = {t.name: LongTermAccumulator(t.factor) for t in self.cfg.long_tiers}
         return agg
 
@@ -196,6 +203,7 @@ class MarketFeed:
             archive_dir=cfg.recorder.data_dir,
             klines=BinanceKlines(binance[0]) if binance else None,
             bitunix_klines=BitunixKlines(bitunix[0]) if bitunix else None,
+            tape_trades=cfg.agent.tape_trades,
         )
 
     async def _on_chart_event(self, e: Event) -> None:
@@ -229,7 +237,9 @@ class MarketFeed:
                     self._candle_dirty[mk] = (e.bar, e.closed)
             return
         agg.on_event(e)
-        if isinstance(e, InstrumentInfo):
+        if isinstance(e, Trade):
+            self.tape[k].append(e)
+        elif isinstance(e, InstrumentInfo):
             info = {
                 "exchange": e.exchange,
                 "base": e.symbol,
@@ -319,10 +329,21 @@ class MarketFeed:
         k = venue_key(e.exchange, e.symbol)
         if k not in self.aggs:
             return
+        self.stats.setdefault(k, {})[type(e).__name__] = e
         encoded = encode_stat(e, k)
         if encoded is not None:
             kind, frame = encoded
             self.bridge.publish_stat(k, kind, frame)
+
+    def legs(self, key: str) -> list[str]:
+        """Börsen-Keys hinter einem Key (kombiniertes Buch: alle Beine, sonst er selbst)."""
+        return list(self._combined.get(key, [key] if key in self.aggs else []))
+
+    def candles_1m(self, key: str) -> list[CandleBar]:
+        """1m-Kerzen (aufsteigend); kombiniertes Buch nutzt die des ersten Beins."""
+        legs = self.legs(key)
+        store = self._candles.get(legs[0] if legs else key, {})
+        return [store[t] for t in sorted(store)]
 
     def _mirrors(self, key: str) -> list[str]:
         """Kombinierte Keys, die die Kerzen dieses Keys mitbenutzen."""

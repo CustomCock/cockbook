@@ -115,6 +115,14 @@ export interface Handlers {
   /** Echtes Börsenkonto */
   onLive?(m: LiveState): void;
   onLiveResult?(m: LiveResult): void;
+  /** Zeichnungen eines Coins (nach jeder Änderung, auch durch Claude) */
+  onDrawings?(m: DrawingsMessage): void;
+}
+
+export interface DrawingsMessage {
+  type: "drawings";
+  key: string;
+  items: unknown[];
 }
 
 /** Antwort auf eine Live-Anfrage (`data` z. B. Hebel/Margin-Modus bei "settings"). */
@@ -297,6 +305,8 @@ export interface Connection {
   paper(op: string, payload?: Record<string, unknown>): number;
   /** Echtes Konto (Bitunix): Anfrage-Nummer kommt im `live_result` zurück */
   live(op: string, payload?: Record<string, unknown>): number;
+  /** Zeichnungen: put / delete / clear / load (Antwort kommt als "drawings") */
+  draw(op: string, key: string, payload?: Record<string, unknown>): void;
   /** Sofort neu verbinden (z. B. nachdem ein Token eingegeben wurde) */
   reconnect(): void;
   close(): void;
@@ -338,6 +348,8 @@ export function connect(url: () => string, h: Handlers, initialSymbol: () => str
         else if (msg.type.startsWith("paper_")) h.onPaper?.(msg as PaperMessage);
         else if (msg.type === "live_state") h.onLive?.(msg as LiveState);
         else if (msg.type === "live_result") h.onLiveResult?.(msg as LiveResult);
+        else if (msg.type === "drawings") h.onDrawings?.(msg as DrawingsMessage);
+        else if (msg.type === "drawings_error") console.warn("Zeichnung abgelehnt:", (msg as { message?: string }).message);
       } else {
         const f = decode(new Uint8Array(ev.data as ArrayBuffer)) as BinaryFrame | Extract<LongMessage, { t: string }>;
         if (f.t === "lc" || f.t === "lk") h.onLong(f);
@@ -378,6 +390,7 @@ export function connect(url: () => string, h: Handlers, initialSymbol: () => str
       send({ type: "live", op, req, ...payload });
       return req;
     },
+    draw: (op: string, key: string, payload: Record<string, unknown> = {}) => send({ type: "draw", op, key, ...payload }),
     longOff: () => {
       longSub = null;
       send({ type: "long_off" });

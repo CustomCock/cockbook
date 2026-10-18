@@ -54,14 +54,18 @@ class _Client:
     """Eigener Sendepuffer pro Client. Ist er voll, fliegen die ältesten Frames raus:
     ein langsamer Browser-Tab darf weder den Feed noch andere Clients bremsen."""
 
-    def __init__(self, ws: web.WebSocketResponse, maxsize: int) -> None:
+    def __init__(self, ws: web.WebSocketResponse, maxsize: int, *, text_only: bool = False) -> None:
         self.ws = ws
+        # Agent (Claude/MCP): nur Steuer-Nachrichten, keine Chart-/Kennzahl-Frames
+        self.text_only = text_only
         self.symbol: str | None = None
         self.long_sub: tuple[str, str] | None = None  # (Symbol, Stufe) der Langzeit-Ansicht
         self.queue: asyncio.Queue[Frame] = asyncio.Queue(maxsize=maxsize)
         self.dropped = 0
 
     def put(self, frame: Frame) -> None:
+        if self.text_only and isinstance(frame, bytes):
+            return
         if self.queue.full():
             self.queue.get_nowait()
             self.dropped += 1
@@ -105,6 +109,10 @@ class Bridge:
         self.paper_handler: Callable[[dict[str, Any]], dict[str, Any]] | None = None
         # Echtes Konto: Anfrage -> Antwort (asynchron, geht an die Börse)
         self.live_handler: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]] | None = None
+        # Zeichnungen: Anfrage -> (Antwort, an alle senden?)
+        self.draw_handler: Callable[[dict[str, Any]], tuple[dict[str, Any], bool]] | None = None
+        # Abfragen (Claude/MCP): Orderbuch-Zusammenfassung, Trades, Kerzen …
+        self.query_handler: Callable[[dict[str, Any]], dict[str, Any]] | None = None
         # Zustand für alle Clients (z. B. Paper-Konto), auch für neu verbundene
         self._shared: dict[str, str] = {}
 
@@ -281,9 +289,11 @@ class Bridge:
             + self.cfg.long_queue_frames
             + 1000
         )
-        client = _Client(ws, maxsize)
+        # ?role=agent: MCP-Erweiterung – fragt nur ab, braucht keinen Chart-Datenstrom
+        agent = request.query.get("role") == "agent"
+        client = _Client(ws, maxsize, text_only=agent)
         self._send_base_state(client)
-        if self._channels:
+        if self._channels and not agent:
             self._subscribe(client, self._sorted_symbols()[0])
         self._clients.add(client)
         log.info(
@@ -339,6 +349,27 @@ class Bridge:
             client.put(json.dumps(reply))
         elif msg.get("type") == "live" and self.live_handler is not None:
             self._spawn(self._live(client, msg))
+        elif msg.get("type") == "draw" and self.draw_handler is not None:
+            try:
+                reply, everyone = self.draw_handler(msg)
+            except Exception:
+                log.exception("draw request failed", extra={"op": msg.get("op")})
+                reply = {"type": "drawings_error", "key": msg.get("key"), "req": msg.get("req"),
+                         "message": "interner Fehler – siehe Backend-Log"}  # fmt: skip
+                everyone = False
+            text = json.dumps(reply)
+            if everyone:
+                self.broadcast(text)
+            else:
+                client.put(text)
+        elif msg.get("type") == "query" and self.query_handler is not None:
+            try:
+                reply = self.query_handler(msg)
+            except Exception:
+                log.exception("query failed", extra={"what": msg.get("what")})
+                reply = {"type": "query_result", "req": msg.get("req"), "ok": False,
+                         "message": "interner Fehler – siehe Backend-Log"}  # fmt: skip
+            client.put(json.dumps(reply))
 
     def _spawn(self, coro: Awaitable[None]) -> None:
         task = asyncio.ensure_future(coro)

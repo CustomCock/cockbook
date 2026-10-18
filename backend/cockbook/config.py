@@ -297,6 +297,19 @@ class TradingConfig(_Model):
     live: LiveConfig = Field(default_factory=LiveConfig)
 
 
+class AgentConfig(_Model):
+    """Zugriff für Claude (MCP-Erweiterung) und gespeicherte Zeichnungen."""
+
+    # Letzte Trades je Symbol im Speicher (für Abfragen wie "Delta der letzten 5 min")
+    tape_trades: Annotated[int, Field(ge=100, le=1_000_000)] = 50_000
+    max_drawings_per_symbol: Annotated[int, Field(ge=1, le=10_000)] = 500
+    max_points_per_drawing: Annotated[int, Field(ge=1, le=100_000)] = 5_000
+    max_text_len: Annotated[int, Field(ge=1, le=100_000)] = 4_000
+    # Wände: größte Level im Bereich ± so viel Prozent um den Mid (Standard der Abfrage)
+    book_range_pct: Annotated[float, Field(gt=0, le=50)] = 1.0
+    book_walls: Annotated[int, Field(ge=1, le=100)] = 10
+
+
 class AppConfig(_Model):
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     exchanges: list[ExchangeConfig] = Field(default_factory=list)
@@ -306,6 +319,7 @@ class AppConfig(_Model):
     history: HistoryConfig = Field(default_factory=HistoryConfig)
     recorder: RecorderConfig = Field(default_factory=RecorderConfig)
     trading: TradingConfig = Field(default_factory=TradingConfig)
+    agent: AgentConfig = Field(default_factory=AgentConfig)
 
 
 def merge_config(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:

@@ -25,8 +25,11 @@
     <aside id="sidebar"></aside>
     <div id="main">
     <nav id="tabs"></nav>
+    <div id="chartrow">
+    <nav id="drawbar"></nav>
     <main id="chart">
       <canvas id="gl"></canvas>
+      <canvas id="drawov"></canvas>
       <canvas id="tradeov"></canvas>
       <canvas id="yaxis"></canvas>
       <canvas id="rsi"></canvas>
@@ -35,13 +38,15 @@
       <div id="crossV" class="cross"></div>
       <div id="crossH" class="cross"></div>
       <div id="tooltip"></div>
+      <div id="drawstyle"></div>
     </main>
+    </div>
     <section id="longchart" hidden></section>
     </div>
     <aside id="trade"></aside>
     </div>
     <footer id="help">
-      Mausrad: Preis-Zoom · Shift+Mausrad: Zeit-Zoom · Ziehen: verschieben · Doppelklick / C: Live + Auto-Zentrierung · F: Preis an Kerzen anpassen · /: Coin suchen · Alt+1…9 / Alt+←→: Tabs · Alt+W: Tab schließen · T: Handel · Strg+Klick: Order (bei Klick-Trading)
+      Mausrad: Preis-Zoom · Shift+Mausrad: Zeit-Zoom · Ziehen: verschieben · Doppelklick / C: Live + Auto-Zentrierung · F: Preis an Kerzen anpassen · /: Coin suchen · Alt+1…9 / Alt+←→: Tabs · Alt+W: Tab schließen · T: Handel · Strg+Z/Y: Zeichnung rückgängig/wiederholen · Shift+Ziehen: messen · Entf: Zeichnung löschen · Strg+Klick: Order (bei Klick-Trading)
     </footer>
     <script type="module" src="/src/main.ts"></script>
   </body>

@@ -148,6 +148,14 @@ server:
   history_columns: 3000   # Historie für neu verbundene Clients (3000 x 100 ms = 5 min)
   client_queue_frames: 2000
 
+agent:                    # Zeichnungen + Zugriff für Claude (MCP-Erweiterung, siehe README)
+  tape_trades: 50000      # letzte Trades je Symbol im Speicher (Abfragen "Delta der letzten x min")
+  max_drawings_per_symbol: 500
+  max_points_per_drawing: 5000
+  max_text_len: 4000
+  book_range_pct: 1.0     # Orderbuch-Abfrage: Standard-Bereich ± % um den Mid
+  book_walls: 10          # so viele größte Level je Seite
+
 ui:
   recenter_margin: 0.15   # Auto-Recentering, wenn der Mid in die äußeren 15 % läuft
   bubble_px_per_sqrt_kusd: 1.2  # Bubble-Radius = sqrt(Gegenwert/1000 USDT) * Faktor
