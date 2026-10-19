@@ -175,6 +175,11 @@ export class LongView {
     this.resize();
   }
 
+  setPalette(name: string): void {
+    this.heat.setPalette(name);
+    this.dirty();
+  }
+
   hide(): void {
     this.visible = false;
     this.root.hidden = true;

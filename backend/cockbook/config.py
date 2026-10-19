@@ -217,6 +217,9 @@ class UiConfig(_Model):
     # In USDT statt Basis-Menge, damit Bubbles über alle Coins vergleichbar sind.
     bubble_px_per_sqrt_kusd: Annotated[float, Field(gt=0)] = 1.2
     bubble_max_px: Annotated[float, Field(gt=0)] = 40.0
+    # Trades unter diesem Gegenwert (USDT) bekommen keine Bubble – sonst bildet das
+    # Kleinst-Rauschen eine dichte Perlenkette am Kurs (0 = alle zeigen)
+    bubble_min_usd: Annotated[float, Field(ge=0)] = 1000.0
     # Anfangs-Preisbereich der Ansicht: so viele Buckets je Seite um den Mid
     initial_view_buckets: Annotated[int, Field(gt=0)] = 250
 

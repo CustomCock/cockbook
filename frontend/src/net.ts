@@ -18,6 +18,7 @@ export interface Hello {
     recenter_margin: number;
     bubble_px_per_sqrt_kusd: number;
     bubble_max_px: number;
+    bubble_min_usd?: number;
     initial_view_buckets?: number;
   };
 }

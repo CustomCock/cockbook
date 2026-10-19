@@ -24,8 +24,9 @@ export type RGBA = readonly [number, number, number, number];
 export const COLORS = {
   bid: [0.33, 0.9, 0.66, 0.95] as RGBA,
   ask: [1.0, 0.45, 0.52, 0.95] as RGBA,
-  buy: [0.33, 0.9, 0.66, 0.5] as RGBA,
-  sell: [1.0, 0.45, 0.52, 0.5] as RGBA,
+  // Bubbles: fast durchsichtige Füllung, der Rand trägt die Farbe (Shader: Ring + 0.6)
+  buy: [0.33, 0.9, 0.66, 0.22] as RGBA,
+  sell: [1.0, 0.45, 0.52, 0.22] as RGBA,
   grid: [0.85, 0.88, 0.92, 0.07] as RGBA,
   unsynced: [1.0, 0.45, 0.52, 0.12] as RGBA,
   longLiq: [1.0, 0.66, 0.2, 0.85] as RGBA, // Long liquidiert (Zwangsverkauf)
@@ -110,6 +111,8 @@ export interface SceneParams {
   /** Bubble-Radius in px pro Wurzel(Gegenwert in 1000 USDT) */
   bubblePxPerSqrtKusd: number;
   bubbleMaxPx: number;
+  /** Trades unter diesem Gegenwert (USDT) bekommen keine Bubble */
+  bubbleMinUsd?: number;
   /** Nur Spalten ab dieser (älter); für die Langzeit-Ebene hinter der feinen Heatmap */
   kMin?: number;
 }
@@ -198,7 +201,9 @@ export function buildBubbles(p: SceneParams, out: VertexBuilder): void {
       const x = colToX(k, view, pw);
       for (const t of trades) {
         if (t.side !== side) continue;
-        const r = bubbleRadius(t.qty * t.vwapTicks * p.tickSize, p.bubblePxPerSqrtKusd, p.bubbleMaxPx);
+        const usd = t.qty * t.vwapTicks * p.tickSize;
+        if (usd < (p.bubbleMinUsd ?? 0)) continue; // Kleinst-Trades: nur Rauschen
+        const r = bubbleRadius(usd, p.bubblePxPerSqrtKusd, p.bubbleMaxPx);
         const y = unitToY(priceUnit(t.vwapTicks, bt), view, ph);
         if (y < -r || y > ph + r) continue;
         out.push(x, y, r, color);

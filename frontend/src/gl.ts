@@ -12,7 +12,13 @@
  * Spalten-/Zeilengrenzen und keine Abhängigkeit von OES_texture_float_linear.
  */
 
-import { buildLut, BACKGROUND, type ScaleRange } from "./colorscale";
+import { buildLut, BACKGROUND, DEFAULT_PALETTE, type ScaleRange } from "./colorscale";
+
+/** Palette für neu angelegte Renderer (z. B. Langzeit-Ansicht), siehe setPalette */
+let currentPalette = DEFAULT_PALETTE;
+export function setDefaultPalette(name: string): void {
+  currentPalette = name;
+}
 import type { HeatmapStore } from "./store";
 import type { View } from "./viewport";
 
@@ -114,8 +120,10 @@ void main() {
   }
   float t = clamp((log(v) - uLogLo) / (uLogHi - uLogLo), 0.0, 1.0);
   vec3 c = texture(uLut, vec2(t * (255.0 / 256.0) + 0.5 / 256.0, 0.5)).rgb;
-  // Schwelle weich ausblenden statt hart abschneiden
+  // Schwelle weich ausblenden statt hart abschneiden; dazu die untersten Farbstufen
+  // in den Hintergrund auslaufen lassen (kein Streifenmuster aus knapp-über-Schwelle-Leveln)
   float alpha = uThreshold > 0.0 ? smoothstep(uThreshold * 0.6, uThreshold, v) : 1.0;
+  alpha *= smoothstep(0.0, 0.22, t);
   outColor = vec4(mix(uBg, c, alpha), 1.0);
 }`;
 
@@ -169,12 +177,19 @@ export class HeatmapRenderer {
     this.dataTex = gl.createTexture()!;
     this.lutTex = gl.createTexture()!;
     gl.bindTexture(gl.TEXTURE_2D, this.lutTex);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 256, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, buildLut());
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 256, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, buildLut(currentPalette));
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+  }
+
+  /** Farbschema wechseln (Farbtabelle neu hochladen). */
+  setPalette(name: string): void {
+    const gl = this.gl;
+    gl.bindTexture(gl.TEXTURE_2D, this.lutTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 256, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, buildLut(name));
   }
 
   attach(store: HeatmapStore): void {
@@ -311,7 +326,7 @@ void main() {
   float edge = 1.0 - smoothstep(1.0 - px, 1.0, d);
   if (edge <= 0.0) discard;
   float ring = smoothstep(1.0 - 3.0 * px, 1.0 - px, d);
-  float a = mix(vColor.a, min(1.0, vColor.a + 0.35), ring) * edge;
+  float a = mix(vColor.a, min(1.0, vColor.a + 0.6), ring) * edge;
   outColor = vec4(vColor.rgb, a);
 }`;
 

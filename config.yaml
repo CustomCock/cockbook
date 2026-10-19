@@ -175,6 +175,7 @@ ui:
   bubble_px_per_sqrt_kusd: 1.2  # Bubble-Radius = sqrt(Gegenwert/1000 USDT) * Faktor
                                 # (100k USDT -> 12 px, 1 Mio. -> 38 px)
   bubble_max_px: 40
+  bubble_min_usd: 1000          # kleinere Trades ohne Bubble (0 = alle)
   initial_view_buckets: 250     # Anfangs-Preisbereich je Seite um den Mid
 
 history:                  # Tageskerzen (Spot) für ATH, Zyklen, Jahresperformance

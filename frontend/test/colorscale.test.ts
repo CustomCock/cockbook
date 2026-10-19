@@ -38,3 +38,15 @@ describe("colorscale", () => {
     expect(lum(128)).toBeGreaterThan(lum(0));
   });
 });
+
+describe("Paletten", () => {
+  it("jede Palette beginnt beim Hintergrund und wird (außer Klassisch) stetig heller", async () => {
+    const { PALETTES, buildLut, luminance, BACKGROUND } = await import("../src/colorscale");
+    for (const id of Object.keys(PALETTES)) {
+      const lut = buildLut(id);
+      expect([lut[0], lut[1], lut[2]], id).toEqual(BACKGROUND);
+      if (id === "klassisch") continue;
+      for (let i = 1; i < 256; i++) expect(luminance(lut, i), `${id} @${i}`).toBeGreaterThanOrEqual(luminance(lut, i - 1) - 1e-9);
+    }
+  });
+});

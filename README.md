@@ -254,7 +254,7 @@ horizontale Linien ein“ oder „Wie war das Delta der letzten 15 Minuten auf B
 
 Bedienung (wie TradingView): Mausrad = Zeit-Zoom, Preisleiste ziehen (oder Mausrad über der Preisleiste) = Preis-Zoom, Zeitleiste ziehen = Zeit-Zoom, „Auto“ unter der Preisleiste bzw. Doppelklick auf die Preisleiste = Preisachse folgt wieder dem Kurs,
 Ziehen = verschieben (zurück in der Zeit und nach rechts in den leeren Bereich – die Heatmap baut sich an der Live-Kante weiter auf), Doppelklick oder `C` = zurück zu Live mit
-Auto-Zentrierung, `F` = Preisbereich an die sichtbaren Kerzen anpassen, `/` = Coin suchen, `Alt+1…9` / `Alt+←→` = Tabs, `Alt+W` = Tab schließen. Regler „Kontrast“ und „Schwelle“ steuern die Farbskala; Einstellungen werden
+Auto-Zentrierung, `F` = Preisbereich an die sichtbaren Kerzen anpassen, `/` = Coin suchen, `Alt+1…9` / `Alt+←→` = Tabs, `Alt+W` = Tab schließen. „Farben“ wählt das Farbschema (Polar, Glut, Eis, Graustufen, Klassisch – alle außer Klassisch werden mit der Menge stetig heller, große Wände leuchten). „Schwelle“ legt fest, ab welchem Anteil der sichtbaren Liquidität gefärbt wird (Standard: Median – das Grundrauschen bleibt Hintergrund), „Kontrast“ wie schnell die hellste Farbe erreicht wird; Trades unter `ui.bubble_min_usd` (Standard 1.000 USDT) bekommen keine Bubble; Einstellungen werden
 im Browser gespeichert.
 
 Ohne GPU (z. B. in einer VM) rendert der Browser per Software. CockBook erkennt das und

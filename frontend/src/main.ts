@@ -1,14 +1,14 @@
 import "./style.css";
 import { AXIS_H, AXIS_W, drawPriceAxis, drawTimeAxis, formatPrice, gridStepTicks, timeLabel, type Instrument } from "./axes";
 import { aggregate, buildCandles, CandleSeries, RRectBuilder, type CandleMinutes } from "./candles";
-import { computeRange, type ScaleRange, type ScaleSettings } from "./colorscale";
+import { computeRange, DEFAULT_PALETTE, DEFAULT_THRESHOLD, PALETTES, type ScaleRange, type ScaleSettings } from "./colorscale";
 import { showTokenPrompt, takeTokenFromHash, wsUrlWithToken } from "./backend";
 import { CoinPicker } from "./coinpicker";
 import { ColumnAssembler } from "./columns";
 import { CYCLE_PRESETS } from "./cycles";
 import { buildDomRows, DOM_W, drawDom } from "./dom";
 import { loadFeatures, saveFeatures } from "./features";
-import { HeatmapRenderer, PRIM, PrimRenderer, RRectRenderer } from "./gl";
+import { HeatmapRenderer, PRIM, PrimRenderer, RRectRenderer, setDefaultPalette } from "./gl";
 import { coarseView, type LongParams } from "./longterm";
 import { LongView, type LongLayers } from "./longview";
 import { Markets, decimalsOf } from "./markets";
@@ -39,7 +39,8 @@ import { DrawToolbar } from "./drawings/toolbar";
 import { AiPanel } from "./aipanel";
 
 takeTokenFromHash();
-const SETTINGS_KEY = "cockbook.settings.v1";
+// v2: neue Standard-Schwelle (Median) und Farbschema – alte Werte (Schwelle 0,1) nicht übernehmen
+const SETTINGS_KEY = "cockbook.settings.v2";
 const SYMBOL_KEY = "cockbook.symbol.v1";
 const CANDLE_KEY = "cockbook.candles.v1";
 const CYCLE_KEY = "cockbook.cycle.v1";
@@ -74,6 +75,7 @@ const tooltipEl = $<HTMLElement>("tooltip");
 const contrastEl = $<HTMLInputElement>("contrast");
 const thresholdEl = $<HTMLInputElement>("threshold");
 const perfEl = $<HTMLElement>("perf");
+const paletteEl = $<HTMLSelectElement>("palette");
 
 const heatmap = new HeatmapRenderer(glCanvas);
 // Grobe Preis-Ebene (Herauszoomen): zweiter Renderer auf demselben Canvas/Kontext
@@ -165,8 +167,9 @@ interface Saved {
   contrastLog: number;
   threshold: number;
   colWidth: number;
+  palette: string;
 }
-const DEFAULTS: Saved = { contrastLog: 0, threshold: 0.1, colWidth: 2 };
+const DEFAULTS: Saved = { contrastLog: 0, threshold: DEFAULT_THRESHOLD, colWidth: 2, palette: DEFAULT_PALETTE };
 function loadSettings(): Saved {
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);
@@ -182,6 +185,7 @@ function saveSettings(): void {
       contrastLog: Number(contrastEl.value),
       threshold: Number(thresholdEl.value),
       colWidth: view.colWidth,
+      palette: paletteEl.value,
     };
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
   } catch {
@@ -189,6 +193,9 @@ function saveSettings(): void {
   }
 }
 const saved = loadSettings();
+for (const [id, p] of Object.entries(PALETTES)) paletteEl.append(new Option(p.label, id));
+paletteEl.value = PALETTES[saved.palette] ? saved.palette : DEFAULT_PALETTE;
+setDefaultPalette(paletteEl.value);
 contrastEl.value = String(saved.contrastLog);
 thresholdEl.value = String(saved.threshold);
 view.colWidth = saved.colWidth;
@@ -802,6 +809,13 @@ function updateRange(): void {
   range = computeRange(Float32Array.from(out), scaleSettings()) ?? range;
 }
 setInterval(updateRange, 500);
+paletteEl.addEventListener("change", () => {
+  setDefaultPalette(paletteEl.value);
+  for (const r of [heatmap, heatmapMip]) r.setPalette(paletteEl.value);
+  longView.setPalette(paletteEl.value);
+  saveSettings();
+  featureVersion++;
+});
 for (const el of [contrastEl, thresholdEl]) {
   el.addEventListener("input", () => {
     updateRange();
@@ -1174,6 +1188,7 @@ function render(): void {
       gridStepTicks: gridStepTicks(view, ph, inst),
       bubblePxPerSqrtKusd: hello?.ui.bubble_px_per_sqrt_kusd ?? 1.2,
       bubbleMaxPx: hello?.ui.bubble_max_px ?? 40,
+      bubbleMinUsd: hello?.ui.bubble_min_usd ?? 0,
     };
     buildUnsynced(p, vUnsynced);
     prims.draw(PRIM.FLAT, vUnsynced.data, vUnsynced.n, pw, ph, px);
