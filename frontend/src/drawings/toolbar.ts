@@ -5,7 +5,8 @@
  */
 
 import type { CursorMode, DrawingController } from "./controller";
-import { GROUPS, TOOL_BY_ID, TOOLS, type Dash, type Drawing, type GroupId, type ToolDef } from "./model";
+import { ICONS } from "./icons";
+import { EMOJIS, GROUPS, TOOL_BY_ID, TOOLS, type Dash, type Drawing, type GroupId, type ToolDef } from "./model";
 
 const el = <K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string): HTMLElementTagNameMap[K] => {
   const e = document.createElement(tag);
@@ -15,13 +16,22 @@ const el = <K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: 
 };
 
 const CURSORS: { id: CursorMode; label: string; icon: string }[] = [
-  { id: "cross", label: "Fadenkreuz", icon: "✛" },
-  { id: "dot", label: "Punkt", icon: "•" },
-  { id: "arrow", label: "Pfeil", icon: "➤" },
-  { id: "demo", label: "Präsentation (Laserpointer)", icon: "✎" },
-  { id: "magic", label: "Magie (Glitzerspur)", icon: "✨" },
-  { id: "eraser", label: "Radierer (Klick löscht Zeichnung)", icon: "⌫" },
+  { id: "cross", label: "Fadenkreuz", icon: "cursor" },
+  { id: "dot", label: "Punkt", icon: "dot" },
+  { id: "arrow", label: "Pfeil", icon: "arrow" },
+  { id: "demo", label: "Präsentation (Laserpointer)", icon: "demo" },
+  { id: "magic", label: "Magie (Glitzerspur)", icon: "magic" },
+  { id: "eraser", label: "Radierer (Klick löscht Zeichnung)", icon: "eraser" },
 ];
+
+/** Knopf mit SVG-Symbol */
+function iconBtn(icon: string, title: string, cls = "db-btn"): HTMLButtonElement {
+  const b = el("button", cls);
+  b.type = "button";
+  b.title = title;
+  b.innerHTML = ICONS[icon] ?? "";
+  return b;
+}
 
 const COLORS = ["#5accff", "#55e5a8", "#ff7385", "#ffa833", "#b99cff", "#ffe24f", "#dfe1e4", "#787b86"];
 
@@ -44,62 +54,55 @@ export class DrawToolbar {
     this.root = root;
     root.classList.add("drawbar");
     for (const g of GROUPS) {
-      const b = el("button", "db-btn", g.icon);
-      b.type = "button";
-      b.title = g.label;
-      const caret = el("span", "db-caret", "▸");
-      b.append(caret);
-      b.addEventListener("click", (e) => {
-        // Klick aufs Symbol: zuletzt benutztes Werkzeug der Gruppe; aufs Dreieck: Menü
+      // Symbol = Werkzeug (zuletzt benutztes der Gruppe), Pfeil rechts = Menü
+      const wrap = el("div", "db-group");
+      const b = iconBtn(g.id, g.label);
+      const caret = iconBtn("caret", `${g.label} – alle Werkzeuge`, "db-caret");
+      b.addEventListener("click", () => {
         const last = this.lastTool.get(g.id);
-        if (g.id === "cursor" || !last || e.offsetX > 26) this.openFlyout(g.id, b);
+        if (g.id === "cursor" || !last) this.openFlyout(g.id, wrap);
         else this.pick(last, g.id);
       });
+      caret.addEventListener("click", () => this.openFlyout(g.id, wrap));
+      wrap.append(b, caret);
       this.groupBtns.set(g.id, b);
-      root.append(b);
+      root.append(wrap);
     }
     root.append(el("div", "db-sep"));
-    const util = (id: string, icon: string, title: string, fn: (b: HTMLButtonElement) => void) => {
-      const b = el("button", "db-btn", icon);
-      b.type = "button";
-      b.title = title;
+    const util = (id: string, title: string, fn: (b: HTMLButtonElement) => void) => {
+      const b = iconBtn(id, title);
       b.addEventListener("click", () => fn(b));
       this.utilBtns.set(id, b);
       root.append(b);
     };
-    util("measure", "📏", "Messen (auch Shift+Ziehen im Chart)", () => {
+    util("measure", "Messen (auch Shift+Ziehen im Chart)", () => {
       this.c.setTool(null);
       this.c.measureMode = !this.c.measureMode;
       this.refresh();
     });
-    util("zoom", "🔍", "Zoom: Bereich aufziehen", () => {
+    util("zoom", "Zoom: Bereich aufziehen", () => {
       this.c.setTool(null);
       this.c.zoomMode = !this.c.zoomMode;
       this.refresh();
     });
-    util("magnet", "🧲", "Magnet: aus → schwach (rastet nahe an O/H/L/C ein) → stark (immer)", () => {
+    root.append(el("div", "db-sep"));
+    util("magnet", "Magnet: aus → schwach (rastet nahe an O/H/L/C ein) → stark (immer)", () => {
       this.c.magnet = this.c.magnet === "off" ? "weak" : this.c.magnet === "weak" ? "strong" : "off";
       this.refresh();
     });
-    util("keep", "✏️", "Weiterzeichnen: Werkzeug bleibt nach dem Setzen aktiv", () => {
+    util("keep", "Weiterzeichnen: Werkzeug bleibt nach dem Setzen aktiv", () => {
       this.c.keepDrawing = !this.c.keepDrawing;
       this.refresh();
     });
-    util("lock", "🔒", "Alle Zeichnungen sperren (nicht verschiebbar)", () => {
+    util("lock", "Alle Zeichnungen sperren (nicht verschiebbar)", () => {
       this.c.lockAll = !this.c.lockAll;
       this.refresh();
     });
-    util("hide", "👁", "Ausblenden: Zeichnungen / Positionen & Orders / alles", (b) => this.openHideMenu(b));
-    util("remove", "🗑", "Alle Zeichnungen dieses Coins entfernen", () => {
+    util("eye", "Ausblenden: Zeichnungen / Positionen & Orders / alles · Objektliste", (b) => this.openHideMenu(b));
+    root.append(el("div", "db-sep"));
+    util("trash", "Alle Zeichnungen dieses Coins entfernen (Rückgängig: Strg+Z)", () => {
       if (this.c.items.length && confirm(`Alle ${this.c.items.length} Zeichnungen dieses Coins entfernen? (Rückgängig mit Strg+Z)`)) this.c.removeAll();
     });
-    util("tree", "☰", "Objektliste", () => {
-      this.treeOpen = !this.treeOpen;
-      this.refresh();
-    });
-    root.append(el("div", "db-sep"));
-    util("undo", "↶", "Rückgängig (Strg+Z)", () => this.c.undoStep());
-    util("redo", "↷", "Wiederholen (Strg+Y)", () => this.c.redoStep());
 
     this.flyout = el("div", "db-flyout");
     this.flyout.hidden = true;
@@ -128,7 +131,9 @@ export class DrawToolbar {
       for (const cur of CURSORS) {
         const b = el("button", `db-item${this.c.cursor === cur.id && !this.c.tool ? " on" : ""}`);
         b.type = "button";
-        b.append(el("span", "db-ico", cur.icon), cur.label);
+        const ico = el("span", "db-ico");
+        ico.innerHTML = ICONS[cur.icon] ?? "";
+        b.append(ico, cur.label);
         b.addEventListener("click", () => {
           this.c.setCursor(cur.id);
           f.hidden = true;
@@ -136,6 +141,24 @@ export class DrawToolbar {
         });
         f.append(b);
       }
+    } else if (group === "icons") {
+      // Emoji-Raster: Auswahl = Werkzeug "icon" mit diesem Text, ein Klick in den Chart setzt es
+      const grid = el("div", "db-emoji");
+      for (const e of EMOJIS) {
+        const b = el("button", "db-emoji-btn", e);
+        b.type = "button";
+        b.addEventListener("click", () => {
+          this.lastTool.set("icons", "icon");
+          this.c.setTool("icon", e);
+          f.hidden = true;
+          this.refresh();
+        });
+        grid.append(b);
+      }
+      const own = el("button", "db-item", "Eigener Text / Emoji …");
+      own.type = "button";
+      own.addEventListener("click", () => this.pick("icon", "icons"));
+      f.append(grid, own);
     } else {
       let section = "";
       for (const t of TOOLS.filter((x) => x.group === group) as readonly ToolDef[]) {
@@ -180,6 +203,7 @@ export class DrawToolbar {
       this.c.hideTrading = all;
       this.onHideTrading();
     });
+    opt("Objektliste anzeigen", this.treeOpen, () => (this.treeOpen = !this.treeOpen));
     const r = anchor.getBoundingClientRect();
     f.style.left = `${r.right + 6}px`;
     f.style.top = `${r.top}px`;
@@ -192,20 +216,20 @@ export class DrawToolbar {
     const activeGroup = c.tool ? TOOL_BY_ID.get(c.tool)?.group : null;
     for (const [g, b] of this.groupBtns) {
       b.classList.toggle("on", g === activeGroup || (g === "cursor" && !c.tool && !c.measureMode && !c.zoomMode && c.cursor !== "cross"));
-      if (g === "cursor") b.firstChild!.textContent = CURSORS.find((x) => x.id === c.cursor)?.icon ?? "✛";
+      if (g === "cursor") b.innerHTML = ICONS[CURSORS.find((x) => x.id === c.cursor)?.icon ?? "cursor"] ?? "";
       if (g === activeGroup && c.tool) b.title = `${GROUPS.find((x) => x.id === g)!.label} – aktiv: ${TOOL_BY_ID.get(c.tool)!.label}`;
     }
     const on = (id: string, v: boolean) => this.utilBtns.get(id)!.classList.toggle("on", v);
     on("measure", c.measureMode);
     on("zoom", c.zoomMode);
     on("magnet", c.magnet !== "off");
-    this.utilBtns.get("magnet")!.textContent = c.magnet === "strong" ? "🧲!" : "🧲";
+    this.utilBtns.get("magnet")!.classList.toggle("strong", c.magnet === "strong");
+    this.utilBtns.get("magnet")!.title = `Magnet: ${{ off: "aus", weak: "schwach", strong: "stark" }[c.magnet]} (Klick: aus → schwach → stark)`;
     on("keep", c.keepDrawing);
     on("lock", c.lockAll);
-    on("hide", c.hideDrawings || c.hideTrading);
-    on("tree", this.treeOpen);
-    this.utilBtns.get("undo")!.disabled = !c.canUndo;
-    this.utilBtns.get("redo")!.disabled = !c.canRedo;
+    this.utilBtns.get("lock")!.innerHTML = ICONS[c.lockAll ? "lockOn" : "lock"]!;
+    on("eye", c.hideDrawings || c.hideTrading);
+    this.utilBtns.get("eye")!.innerHTML = ICONS[c.hideDrawings || c.hideTrading ? "eyeOff" : "eye"]!;
     this.renderStyleBar();
     this.renderTree();
   }

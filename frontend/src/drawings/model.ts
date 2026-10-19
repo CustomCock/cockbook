@@ -45,16 +45,25 @@ export interface Drawing {
   created: number;
 }
 
-export type GroupId = "cursor" | "lines" | "fib" | "patterns" | "forecast" | "shapes" | "notes";
+export type GroupId = "cursor" | "lines" | "fib" | "patterns" | "forecast" | "shapes" | "notes" | "icons";
 
-export const GROUPS: { id: GroupId; label: string; icon: string }[] = [
-  { id: "cursor", label: "Cursor", icon: "✛" },
-  { id: "lines", label: "Linien, Kanäle, Pitchforks", icon: "╱" },
-  { id: "fib", label: "Fibonacci & Gann", icon: "𝜑" },
-  { id: "patterns", label: "Muster & Zyklen", icon: "⋀" },
-  { id: "forecast", label: "Prognose & Messen", icon: "⇕" },
-  { id: "shapes", label: "Formen, Pinsel, Pfeile", icon: "▭" },
-  { id: "notes", label: "Text & Notizen", icon: "T" },
+/** Gruppen der Werkzeugleiste (Symbole: icons.ts) */
+export const GROUPS: { id: GroupId; label: string }[] = [
+  { id: "cursor", label: "Cursor" },
+  { id: "lines", label: "Linien, Kanäle, Pitchforks" },
+  { id: "fib", label: "Fibonacci & Gann" },
+  { id: "patterns", label: "Muster & Zyklen" },
+  { id: "forecast", label: "Prognose & Messen" },
+  { id: "shapes", label: "Formen, Pinsel, Pfeile" },
+  { id: "notes", label: "Text & Notizen" },
+  { id: "icons", label: "Icons & Emojis" },
+];
+
+/** Auswahl im Icon-Menü (Werkzeug "icon" mit diesem Text) */
+export const EMOJIS = [
+  "🚀", "🔥", "💎", "🎯", "⚠️", "❗", "❓", "✅", "❌", "⭐",
+  "📈", "📉", "💰", "🐂", "🐻", "🐋", "⚡", "🧱", "🛑", "🔔",
+  "👀", "🤔", "😎", "😱", "💀", "🙏", "👍", "👎", "⬆️", "⬇️",
 ];
 
 /**
@@ -187,7 +196,7 @@ export const TOOLS = [
   T("comment", "Kommentar", "notes", 1, { section: "Text", askText: true }),
   T("pricelabel", "Preis-Label", "notes", 1, { section: "Text" }),
   T("signpost", "Wegweiser", "notes", 1, { section: "Text", askText: true }),
-  T("icon", "Icon / Emoji", "notes", 1, { section: "Text", askText: true, defaults: { fontSize: 22 } }),
+  T("icon", "Icon / Emoji", "icons", 1, { askText: true, defaults: { fontSize: 22 } }),
 ] as const satisfies readonly ToolDef[];
 
 export type ToolId = (typeof TOOLS)[number]["id"];

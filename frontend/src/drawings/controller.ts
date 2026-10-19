@@ -45,6 +45,8 @@ export class DrawingController {
   zoomMode = false;
   selected: string | null = null;
   version = 0;
+  /** Vorgegebener Text fürs nächste Text-Werkzeug (z. B. Emoji aus dem Icon-Menü) – keine Rückfrage */
+  presetText: string | null = null;
 
   private draft: Drawing | null = null;
   private draftFixed = 0; // bereits gesetzte Punkte des Entwurfs
@@ -182,8 +184,9 @@ export class DrawingController {
 
   // --- Werkzeuge -----------------------------------------------------------------------
 
-  setTool(tool: string | null): void {
+  setTool(tool: string | null, presetText: string | null = null): void {
     this.tool = tool;
+    this.presetText = presetText;
     this.measureMode = false;
     this.zoomMode = false;
     this.draft = null;
@@ -490,7 +493,9 @@ export class DrawingController {
     if (!d) return;
     this.draft = null;
     const def = TOOL_BY_ID.get(d.tool)!;
-    if (def.askText) {
+    if (def.askText && this.presetText !== null) {
+      d.style.text = this.presetText;
+    } else if (def.askText) {
       const t = prompt(def.id === "table" ? "Tabelle: Spalten mit | trennen, Zeilen mit Enter (\\n)" : `${def.label}: Text`, d.style.text);
       if (t === null) {
         if (!this.keepDrawing) this.tool = null;
