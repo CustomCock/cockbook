@@ -59,6 +59,7 @@ const tradeCanvas = $<HTMLCanvasElement>("tradeov");
 const drawCanvas = $<HTMLCanvasElement>("drawov");
 const chartRow = $<HTMLElement>("chartrow");
 const drawStyleEl = $<HTMLElement>("drawstyle");
+const autoBtn = $<HTMLButtonElement>("autoScale");
 const tradeOverlay = new TradeOverlay(tradeCanvas);
 /** zählt Änderungen am Paper-Zustand bzw. an gezogenen Linien (neu zeichnen) */
 let tradeVersion = 0;
@@ -267,6 +268,8 @@ function resize(): void {
   rsiCanvas.style.display = rh ? "block" : "none";
   if (rh) place(rsiCanvas, 0, ph, pw + AXIS_W, rh, dpr);
   place(xAxisCanvas, 0, ph + rh, pw, AXIS_H, dpr);
+  // Ecke unter der Preisleiste (wie in TradingView): Auto-Knopf
+  Object.assign(autoBtn.style, { left: `${pw}px`, top: `${ph + rh}px`, width: `${AXIS_W}px`, height: `${AXIS_H}px` });
   crossV.style.height = `${ph + rh}px`;
   crossH.style.width = `${pw}px`;
   sizeVersion++;
@@ -623,7 +626,7 @@ const conn = connect(
           view = { ...view, yLo: center - half, yHi: center + half };
           viewInitialized = true;
         }
-        if (view.autoCenter && view.offset === 0 && f.bb !== null && f.ba !== null) {
+        if (view.autoCenter && view.offset <= 0 && f.bb !== null && f.ba !== null) {
           view = recenter(view, priceUnit((f.bb + f.ba) / 2, hello.bucket_ticks), hello.ui.recenter_margin);
         }
       } else if (f.t === "tr") {
@@ -752,7 +755,7 @@ function zoomToRect(t0: number, t1: number, p0: number, p1: number): void {
   const unit = inst.tickSize * inst.bucketTicks;
   const colWidth = pw / ((t1 - t0) / hello.interval_ms);
   view = zoomX({ ...view, colWidth: 1 }, colWidth);
-  const offset = Math.min(Math.max(Math.round((latest - t1) / hello.interval_ms), 0), maxOffset());
+  const offset = Math.min(Math.max(Math.round((latest - t1) / hello.interval_ms), minOffset()), maxOffset());
   view = { ...view, offset, autoCenter: false, yLo: p0 / unit, yHi: p1 / unit };
 }
 
@@ -830,14 +833,16 @@ chartEl.addEventListener(
   (e) => {
     e.preventDefault();
     const factor = Math.pow(1.0015, e.deltaY);
-    const { ph } = plotSize();
-    const { y } = localPos(e);
-    if (e.shiftKey || y > ph) {
-      view = zoomX(view, 1 / factor);
+    const { pw, ph } = plotSize();
+    const { x, y } = localPos(e);
+    if (x >= pw && x < pw + AXIS_W && y < ph) {
+      // über der Preisleiste: Preis-Zoom um die Mausposition
+      view = { ...zoomY(view, factor, yToUnit(y, view, ph)), autoCenter: false };
+    } else {
+      // im Chart und auf der Zeitleiste: Zeit-Zoom (wie TradingView)
+      view = clampOffset(zoomX(view, 1 / factor));
       saveSettings();
       if (features.candles && view.autoCenter) fitToCandles();
-    } else {
-      view = zoomY(view, factor, yToUnit(y, view, ph));
     }
     updateHover();
   },
@@ -849,12 +854,22 @@ let drag: { x: number; y: number; view: View } | null = null;
 let lineDrag: TradeLine | null = null;
 /** Maus gehört gerade den Zeichenwerkzeugen (Punkt setzen, Zeichnung ziehen, messen) */
 let drawDrag = false;
+/** Preis- oder Zeitleiste wird gezogen (skalieren) */
+let axisDrag: { axis: "price" | "time"; x: number; y: number; view: View } | null = null;
+/** Pixel Mausweg für Faktor e (Achse ziehen): größer = feinfühliger */
+const AXIS_DRAG_PX = 160;
 chartEl.addEventListener("pointerdown", (e) => {
   // DOM-Spalte hat eigene Klicks (Kopf: Einheit, Klick-Trading) – nicht einfangen, sonst
   // käme der click nie am DOM-Canvas an
-  if (e.target === domCanvas || drawStyleEl.contains(e.target as Node)) return;
+  if (e.target === domCanvas || e.target === autoBtn || drawStyleEl.contains(e.target as Node)) return;
   const p = localPos(e);
   const { pw, ph } = plotSize();
+  if (e.button === 0 && (e.target === yAxisCanvas || e.target === xAxisCanvas)) {
+    // Achse ziehen = skalieren (Preisleiste: Preis, Zeitleiste: Zeit) wie in TradingView
+    axisDrag = { axis: e.target === yAxisCanvas ? "price" : "time", x: e.clientX, y: e.clientY, view };
+    chartEl.setPointerCapture(e.pointerId);
+    return;
+  }
   const dctx = drawCtx();
   if (e.button === 0 && p.x < pw && p.y < ph) {
     // Aktives Zeichenwerkzeug hat Vorrang vor Handelslinien und Verschieben
@@ -894,6 +909,19 @@ chartEl.addEventListener("pointerdown", (e) => {
 });
 chartEl.addEventListener("pointermove", (e) => {
   mouse = localPos(e);
+  if (axisDrag) {
+    const a = axisDrag;
+    if (a.axis === "price") {
+      // nach unten ziehen = mehr Preisbereich (gestaucht), nach oben = gedehnt; Mitte bleibt
+      const f = Math.exp((e.clientY - a.y) / AXIS_DRAG_PX);
+      view = { ...zoomY(a.view, f, (a.view.yLo + a.view.yHi) / 2), autoCenter: false };
+    } else {
+      // nach links ziehen = enger (mehr Zeit), nach rechts = weiter
+      view = clampOffset(zoomX({ ...a.view, offset: view.offset }, Math.exp((e.clientX - a.x) / AXIS_DRAG_PX)));
+    }
+    updateHover();
+    return;
+  }
   if (lineDrag && tradeOverlay.dragging) {
     const price = priceAtY(mouse.y);
     if (price !== null) tradeOverlay.dragging = { line: lineDrag, price };
@@ -908,6 +936,11 @@ chartEl.addEventListener("pointermove", (e) => {
   }
   if (!drag) {
     const inPlot = mouse.x < plotSize().pw;
+    if (e.target === yAxisCanvas || e.target === xAxisCanvas) {
+      chartEl.style.cursor = e.target === yAxisCanvas ? "ns-resize" : "ew-resize";
+      updateHover();
+      return;
+    }
     const hit = inPlot && !drawCtl.hideTrading ? tradeOverlay.hit(mouse.x, mouse.y) : null;
     const over = inPlot && !!dctx && drawCtl.hoverHit(dctx, mouse.x, mouse.y);
     chartEl.style.cursor = hit
@@ -925,7 +958,7 @@ chartEl.addEventListener("pointermove", (e) => {
     const unitsPerPx = (drag.view.yHi - drag.view.yLo) / ph;
     let v = Math.abs(dy) > 2 ? panY(drag.view, dy * unitsPerPx) : { ...drag.view };
     const offset = Math.round(drag.view.offset + dx / drag.view.colWidth);
-    v = { ...v, offset: Math.min(Math.max(offset, 0), maxOffset()) };
+    v = clampOffset({ ...v, offset });
     if (v.offset > 0) v.autoCenter = false;
     view = v;
   }
@@ -933,6 +966,10 @@ chartEl.addEventListener("pointermove", (e) => {
 });
 chartEl.addEventListener("pointerup", (e) => {
   drag = null;
+  if (axisDrag) {
+    axisDrag = null;
+    saveSettings();
+  }
   if (drawDrag) {
     drawDrag = false;
     const dctx = drawCtx();
@@ -952,7 +989,11 @@ chartEl.addEventListener("pointerleave", () => {
   updateHover();
 });
 chartEl.addEventListener("dblclick", (e) => {
-  if (drawStyleEl.contains(e.target as Node)) return;
+  if (drawStyleEl.contains(e.target as Node) || e.target === autoBtn) return;
+  if (e.target === yAxisCanvas) {
+    autoScale(true);
+    return;
+  }
   if (drawCtl.doubleClick()) return;
   // Doppelklick auf eine Zeichnung soll nicht zur Gegenwart springen
   const dctx = drawCtx();
@@ -1001,6 +1042,39 @@ function fitToCandles(): void {
   view = { ...view, yLo: toUnit(lo - pad), yHi: toUnit(hi + pad) };
 }
 
+/**
+ * Wie weit man nach rechts über die neueste Spalte hinaus scrollen kann (negativer offset):
+ * bis 85 % der Breite leer. Neue Spalten bauen sich dann links davon weiter auf, der Abstand
+ * zum rechten Rand bleibt – wie der Rand in TradingView.
+ */
+function minOffset(): number {
+  return -Math.floor(visibleCols(view, plotSize().pw) * 0.85);
+}
+
+function clampOffset(v: View): View {
+  const offset = Math.min(Math.max(v.offset, minOffset()), maxOffset());
+  return { ...v, offset, autoCenter: offset > 0 ? false : v.autoCenter };
+}
+
+/**
+ * Auto (Knopf unter der Preisleiste, Doppelklick auf die Preisleiste): Preisachse folgt dem
+ * Kurs – zentriert auf den Mid bzw. bei Kerzen an die sichtbaren Kerzen angepasst. Die
+ * Zeitachse bleibt, wo sie ist.
+ */
+function autoScale(on: boolean): void {
+  view = { ...view, autoCenter: on };
+  if (!on || !store || !hello || store.count === 0) return;
+  if (features.candles) {
+    fitToCandles();
+    return;
+  }
+  const i = store.latest;
+  const bb = store.bestBid[i]!;
+  const ba = store.bestAsk[i]!;
+  if (!Number.isNaN(bb) && !Number.isNaN(ba)) view = recenter(view, priceUnit((bb + ba) / 2, hello.bucket_ticks), 0, true);
+}
+autoBtn.addEventListener("click", () => autoScale(!view.autoCenter));
+
 /** Wie weit man zurückscrollen kann: Heatmap-Historie oder – mit Kerzen – deren Historie. */
 function maxOffset(): number {
   if (!store || store.count === 0 || !hello) return 0;
@@ -1032,8 +1106,13 @@ function updateHover(): void {
   const priceRange = (lo: number, n: number) =>
     n === 1 ? formatPrice(lo, inst!) : `${formatPrice(lo, inst!)} – ${formatPrice(lo + n - 1, inst!)}`;
   const lines: string[] = [];
-  if (k >= store.count) {
-    tooltipEl.style.display = "none";
+  if (k < 0) {
+    // rechts der neuesten Spalte (Zukunft): nur Zeit
+    tooltipEl.textContent = timeLabel(latest - k * hello.interval_ms, true);
+  }
+  if (k < 0 || k >= store.count) {
+    if (k >= store.count) tooltipEl.style.display = "none";
+    else placeTooltip(pw, ph);
     return;
   }
   const bucket = Math.floor(unit);
@@ -1048,6 +1127,11 @@ function updateHover(): void {
   }
   lines.push(timeLabel(latest - k * hello.interval_ms, true));
   tooltipEl.textContent = lines.join("\n");
+  placeTooltip(pw, ph);
+}
+
+function placeTooltip(pw: number, ph: number): void {
+  if (!mouse) return;
   const tw = tooltipEl.offsetWidth;
   const th = tooltipEl.offsetHeight;
   const tx = mouse.x + 14 + tw > pw ? mouse.x - tw - 14 : mouse.x + 14;
@@ -1123,6 +1207,7 @@ function render(): void {
   const dctx = drawCtx();
   if (dctx) drawCtl.draw(drawCanvas, dpr, dctx);
   else drawCanvas.getContext("2d")!.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
+  autoBtn.classList.toggle("on", view.autoCenter);
   drawPriceAxis(yAxisCanvas, dpr, store, view, inst, ph);
   if (inst && currentSymbol && tradePanel.open && !drawCtl.hideTrading) {
     const i = inst;

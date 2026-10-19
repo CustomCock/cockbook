@@ -2270,3 +2270,24 @@ button:hover {
   border-color: var(--down);
   color: var(--down);
 }
+
+/* Auto-Knopf in der Ecke unter der Preisleiste (wie TradingView) */
+#autoScale {
+  position: absolute;
+  z-index: 3;
+  padding: 0;
+  border: none;
+  border-left: 1px solid var(--line);
+  border-radius: 0;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 11px;
+}
+
+#autoScale:hover {
+  color: var(--fg);
+}
+
+#autoScale.on {
+  color: var(--accent);
+}

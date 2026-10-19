@@ -36,7 +36,14 @@ from typing import Any
 
 import aiohttp
 
-from cockbook.adapters.common import RestError, get_json, run_ws, sleep_or_stop
+from cockbook.adapters.common import (
+    RestError,
+    bars_to_fetch,
+    get_json,
+    run_ws,
+    sleep_or_stop,
+    sleep_to_minute,
+)
 from cockbook.config import BitunixConfig
 from cockbook.core.eventbus import EventBus
 from cockbook.core.events import (
@@ -191,16 +198,31 @@ class MinuteCandleBuilder:
     def __init__(self, inst: Instrument) -> None:
         self.inst = inst
         self.bar: CandleBar | None = None
+        # zuletzt abgeschlossene Minute: spätere Trades dafür ändern nichts mehr
+        self.closed_minute: int | None = None
+
+    def roll(self, now_ns: int) -> list[Event]:
+        """Minute vorbei, aber kein neuer Trade: laufende Kerze trotzdem abschließen (sonst
+        bliebe sie offen, bis irgendwann der nächste Trade kommt)."""
+        b = self.bar
+        if b is None or b.open_time_ns >= now_ns // _MINUTE_NS * _MINUTE_NS:
+            return []
+        self.bar = None
+        self.closed_minute = b.open_time_ns
+        return [self._event(b, closed=True, ts=now_ns)]
 
     def on_trade(self, t: Trade) -> list[Event]:
         price = t.price_ticks * self.inst.tick_size
         minute = t.ts_ns // _MINUTE_NS * _MINUTE_NS
         out: list[Event] = []
         b = self.bar
-        if b is not None and minute < b.open_time_ns:
+        if (b is not None and minute < b.open_time_ns) or (
+            self.closed_minute is not None and minute <= self.closed_minute
+        ):
             return out  # verspäteter Trade einer abgeschlossenen Minute
         if b is not None and minute > b.open_time_ns:
             out.append(self._event(b, closed=True, ts=t.ts_recv_ns))
+            self.closed_minute = b.open_time_ns
             b = None
         if b is None:
             b = CandleBar(minute, price, price, price, price, t.qty)
@@ -357,6 +379,8 @@ class BitunixAdapter:
             log.info("bitunix adapter starting", extra={"symbol": self.symbol})
             async with asyncio.TaskGroup() as tg:
                 tg.create_task(self._candle_history(session))
+                if self.cfg.candle_reconcile_bars > 0:
+                    tg.create_task(self._candle_reconcile(session))
                 tg.create_task(ping_loop(lambda: self._ws, self._stop, self.cfg.ping_interval_s))
                 tg.create_task(
                     run_ws(
@@ -394,6 +418,49 @@ class BitunixAdapter:
                     bars=tuple(bars),
                 )
             )
+
+    async def _candle_reconcile(self, session: aiohttp.ClientSession) -> None:
+        """Jede Minute kurz nach dem Wechsel: laufende Kerze abschließen und die letzten
+        abgeschlossenen Kerzen durch die offiziellen der Börse ersetzen.
+
+        Warum nicht der Kline-Kanal der Bitunix-WebSocket? Dessen Pushes tragen keine
+        Öffnungszeit, nur den Sendezeitpunkt – an der Minutengrenze ist nicht eindeutig, zu
+        welcher Kerze ein Wert gehört. Der REST-Abgleich dagegen ist exakt und füllt auch
+        Minuten ohne Trade sowie Lücken nach einer Trennung.
+        Doku: https://www.bitunix.com/api-docs/futures/market/get_kline.html
+        """
+        last_ok: int | None = None
+        while not await sleep_to_minute(self._stop, self.cfg.candle_reconcile_delay_s):
+            now = time.time_ns()
+            if self.candles is not None and not self.bus.closed:
+                await self._publish(self.candles.roll(now))
+            n = bars_to_fetch(
+                last_ok, now, self.cfg.candle_reconcile_bars, max(self.cfg.candle_history_bars, 1)
+            )
+            try:
+                bars = await fetch_klines(
+                    session, self.cfg.rest_url, self.symbol, "1m", n + 1, self._stop
+                )
+            except (RestError, aiohttp.ClientError, TimeoutError, KeyError, ValueError) as e:
+                log.warning(
+                    "bitunix candle reconcile failed",
+                    extra={"symbol": self.symbol, "error": repr(e)},
+                )
+                continue
+            now = time.time_ns()
+            closed = tuple(b for b in bars if b.open_time_ns + _MINUTE_NS <= now)
+            last_ok = now
+            if closed and not self.bus.closed:
+                await self.bus.publish(
+                    CandleHistory(
+                        exchange=EXCHANGE,
+                        symbol=self.symbol,
+                        ts_recv_ns=now,
+                        interval="1m",
+                        source="futures",
+                        bars=closed,
+                    )
+                )
 
     async def _on_ws(self, ws: aiohttp.ClientWebSocketResponse) -> None:
         self._ws = ws

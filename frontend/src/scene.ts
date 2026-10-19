@@ -123,16 +123,21 @@ export function bubbleRadius(notionalUsd: number, pxPerSqrtKusd: number, maxPx: 
   return Math.min(maxPx, Math.max(1.5, Math.sqrt(notionalUsd / 1000) * pxPerSqrtKusd));
 }
 
-function visible(p: SceneParams): number {
-  return Math.min(visibleCols(p.view, p.pw), p.store.count - p.view.offset);
+/**
+ * Sichtbare Spalten [k0, k1) mit Daten. Nach rechts gescrollt ist offset < 0: links davon liegt
+ * die Zukunft ohne Daten – nie negative k an den Ringpuffer geben (liefe auf alte Spalten um).
+ */
+function visibleRange(p: SceneParams): [number, number] {
+  const k0 = Math.max(0, Math.floor(p.view.offset));
+  return [k0, Math.min(p.view.offset + visibleCols(p.view, p.pw), p.store.count)];
 }
 
 /** Flächen: Markierung nicht synchroner Spalten. */
 export function buildUnsynced(p: SceneParams, out: VertexBuilder): void {
   out.reset();
   const { store, view, pw, ph } = p;
-  const n = visible(p);
-  for (let k = view.offset; k < view.offset + n; k++) {
+  const [k0, k1] = visibleRange(p);
+  for (let k = k0; k < k1; k++) {
     if (!store.synced[store.indexAgo(k)]) {
       const x = colToX(k, view, pw) - view.colWidth / 2;
       out.rect(x, 0, Math.max(view.colWidth, 1), ph, COLORS.unsynced);
@@ -184,10 +189,10 @@ export function buildBbo(p: SceneParams, out: VertexBuilder): void {
 export function buildBubbles(p: SceneParams, out: VertexBuilder): void {
   out.reset();
   const { store, view, pw, ph, bucketTicks: bt } = p;
-  const n = visible(p);
+  const [k0, k1] = visibleRange(p);
   for (const side of [-1, 1] as const) {
     const color = side === 1 ? COLORS.buy : COLORS.sell;
-    for (let k = view.offset; k < view.offset + n; k++) {
+    for (let k = k0; k < k1; k++) {
       const trades = store.trades[store.indexAgo(k)];
       if (!trades) continue;
       const x = colToX(k, view, pw);
@@ -206,8 +211,8 @@ export function buildBubbles(p: SceneParams, out: VertexBuilder): void {
 export function buildLiquidations(p: SceneParams, out: VertexBuilder): void {
   out.reset();
   const { store, view, pw, ph, bucketTicks: bt } = p;
-  const n = visible(p);
-  for (let k = view.offset; k < view.offset + n; k++) {
+  const [k0, k1] = visibleRange(p);
+  for (let k = k0; k < k1; k++) {
     const liqs = store.liqs[store.indexAgo(k)];
     if (!liqs) continue;
     const x = colToX(k, view, pw);

@@ -47,6 +47,8 @@ exchanges:
     coverage_refresh_min_interval_s: 5  # Refresh wird eingearbeitet, ohne das Buch zu verwerfen
     liquidations_all_market: true   # Liquidationen aller Coins (sekündlich) statt nur der eigenen
     candles_1m_history: 1500        # 1m-Kerzen beim Start (max. 1500 = 25 h)
+    candle_reconcile_bars: 3        # jede Minute die letzten 3 abgeschlossenen Kerzen per REST abgleichen
+    candle_reconcile_delay_s: 2     # … 2 s nach dem Minutenwechsel (holt nach Pausen automatisch mehr)
     tradfi_stale_timeout_s: 900     # TradFi: in Handelspausen kommen minutenlang keine Updates
     # Alle TradFi-Kontrakte (Aktien, ETFs, Rohstoffe, Devisen) automatisch ins Coin-Menü;
     # Orderbuch startet erst bei Auswahl.
@@ -117,6 +119,8 @@ exchanges:
     ws_url: wss://fapi.bitunix.com/public/
     ping_interval_s: 20         # Bitunix erlaubt max. 5 Nachrichten/s vom Client
     candle_history_bars: 1000   # 1m-Kerzen beim Öffnen eines Coins (REST, je 200)
+    candle_reconcile_bars: 3    # jede Minute: laufende Kerze abschließen, letzte 3 durch die offiziellen ersetzen
+    candle_reconcile_delay_s: 2
     reconnect:
       initial_backoff_s: 1
       max_backoff_s: 60

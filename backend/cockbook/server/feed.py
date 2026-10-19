@@ -130,7 +130,10 @@ class MarketFeed:
         self._combined_synced: dict[str, bool] = {}
         self._registered: dict[str, dict[str, str]] = {}
         self._candles: dict[str, dict[int, CandleBar]] = {}
-        self._candle_dirty: dict[str, tuple[CandleBar, bool]] = {}
+        # je Symbol und Kerze (Öffnungszeit): neueste Version + abgeschlossen? Je Kerze statt
+        # je Symbol, sonst überschriebe die erste Version der neuen Minute den Abschluss der
+        # alten, wenn beide in dasselbe Sendeintervall fallen
+        self._candle_dirty: dict[str, dict[int, tuple[CandleBar, bool]]] = {}
         self._resyncs: dict[str, int] = {}
         self._long: dict[str, dict[str, LongTermAccumulator]] = {}
         # Für Abfragen (Claude/MCP): letzte Trades und letzte Kennzahlen je Symbol
@@ -232,9 +235,8 @@ class MarketFeed:
         if isinstance(e, Candle):
             if e.interval == "1m":
                 self._candles[k][e.bar.open_time_ns] = e.bar
-                self._candle_dirty[k] = (e.bar, e.closed)
-                for mk in self._mirrors(k):
-                    self._candle_dirty[mk] = (e.bar, e.closed)
+                for key in (k, *self._mirrors(k)):
+                    self._candle_dirty.setdefault(key, {})[e.bar.open_time_ns] = (e.bar, e.closed)
             return
         agg.on_event(e)
         if isinstance(e, Trade):
@@ -316,9 +318,13 @@ class MarketFeed:
 
     def _flush_candles(self) -> None:
         """Laufende Kerzen höchstens einmal pro Spalten-Intervall senden."""
-        for sym, (bar, closed) in self._candle_dirty.items():
-            self.bridge.send_live(sym, encode_live_candle(sym, bar, closed))
-            if closed:
+        for sym, bars in self._candle_dirty.items():
+            any_closed = False
+            for t in sorted(bars):  # ältere Kerze zuerst, die laufende zuletzt
+                bar, closed = bars[t]
+                self.bridge.send_live(sym, encode_live_candle(sym, bar, closed))
+                any_closed = any_closed or closed
+            if any_closed:
                 self._publish_candle_history(sym)  # Historie für neue Abonnenten aktuell halten
         self._candle_dirty.clear()
 

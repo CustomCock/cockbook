@@ -90,6 +90,11 @@ class BinanceUsdmConfig(_Model):
     liquidations_all_market: bool = True
     # 1m-Kerzen-Historie beim Start (max. 1500 = 25 h; Gewicht 10 je Symbol)
     candles_1m_history: Annotated[int, Field(ge=1, le=1500)] = 1500
+    # Abgleich jede Minute: die letzten n abgeschlossenen 1m-Kerzen per REST (Gewicht 1) –
+    # überschreibt Live-Werte mit den offiziellen und füllt Lücken (0 = aus)
+    candle_reconcile_bars: Annotated[int, Field(ge=0, le=99)] = 3
+    # so viele Sekunden nach dem Minutenwechsel (Börse braucht kurz, bis die Kerze fest ist)
+    candle_reconcile_delay_s: Annotated[float, Field(ge=0.5, le=30)] = 2.0
     # TradFi-Kontrakte (Gold, Silber, …) haben Handelspausen: dann kommen minutenlang keine
     # Orderbuch-Updates. Längere Frist, sonst würde ständig neu verbunden.
     tradfi_stale_timeout_s: Annotated[float, Field(gt=0)] = 900.0
@@ -123,6 +128,10 @@ class BitunixConfig(_Model):
     rest_url: str = "https://fapi.bitunix.com"
     # 1m-Kerzen beim Start eines Orderbuchs (REST liefert max. 200 je Abfrage, 10 Abfragen/s)
     candle_history_bars: Annotated[int, Field(ge=0, le=5000)] = 1000
+    # Abgleich jede Minute (wie bei Binance): Kerzen entstehen live aus Trades, abgeschlossene
+    # werden durch die offiziellen der Börse ersetzt; füllt Minuten ohne Trade und Lücken
+    candle_reconcile_bars: Annotated[int, Field(ge=0, le=200)] = 3
+    candle_reconcile_delay_s: Annotated[float, Field(ge=0.5, le=30)] = 2.0
     ws_url: str = "wss://fapi.bitunix.com/public/"
     # Bitunix erlaubt max. 5 Nachrichten/s vom Client (auch Pings) – Ping alle n Sekunden
     ping_interval_s: Annotated[float, Field(ge=5)] = 20.0

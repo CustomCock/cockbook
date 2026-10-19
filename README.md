@@ -252,8 +252,8 @@ für die KI-Programme – abgerechnet wird nur über dein Abo. Programme nicht g
 Dann z. B. fragen: „Wo liegen bei BTC die größten Bid-Wände im Bereich ±1 % – zeichne sie als
 horizontale Linien ein“ oder „Wie war das Delta der letzten 15 Minuten auf Binance vs. Bitunix?“
 
-Bedienung: Mausrad = Preis-Zoom, Shift+Mausrad (oder Mausrad über der Zeitachse) = Zeit-Zoom,
-Ziehen = verschieben (auch zurück in der Zeit), Doppelklick oder `C` = zurück zu Live mit
+Bedienung (wie TradingView): Mausrad = Zeit-Zoom, Preisleiste ziehen (oder Mausrad über der Preisleiste) = Preis-Zoom, Zeitleiste ziehen = Zeit-Zoom, „Auto“ unter der Preisleiste bzw. Doppelklick auf die Preisleiste = Preisachse folgt wieder dem Kurs,
+Ziehen = verschieben (zurück in der Zeit und nach rechts in den leeren Bereich – die Heatmap baut sich an der Live-Kante weiter auf), Doppelklick oder `C` = zurück zu Live mit
 Auto-Zentrierung, `F` = Preisbereich an die sichtbaren Kerzen anpassen, `/` = Coin suchen, `Alt+1…9` / `Alt+←→` = Tabs, `Alt+W` = Tab schließen. Regler „Kontrast“ und „Schwelle“ steuern die Farbskala; Einstellungen werden
 im Browser gespeichert.
 

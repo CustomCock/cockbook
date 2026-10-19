@@ -76,7 +76,15 @@ from typing import Any
 
 import aiohttp
 
-from cockbook.adapters.common import RestError, get_json, run_ws, sleep_or_stop
+from cockbook.adapters.common import (
+    MINUTE_NS,
+    RestError,
+    bars_to_fetch,
+    get_json,
+    run_ws,
+    sleep_or_stop,
+    sleep_to_minute,
+)
 from cockbook.config import BinanceUsdmConfig
 from cockbook.core.eventbus import EventBus
 from cockbook.core.events import (
@@ -1009,6 +1017,10 @@ class BinanceUsdmAdapter:
                     )
                 )
                 tg.create_task(self._supervise("snapshot", lambda: self._snapshot_worker(session)))
+                if self.cfg.candle_reconcile_bars > 0:
+                    tg.create_task(
+                        self._supervise("candles", lambda: self._candle_reconcile(session))
+                    )
                 if self.cfg.validation.enabled:
                     tg.create_task(
                         self._supervise("validation", lambda: self._validation_worker(session))
@@ -1219,6 +1231,35 @@ class BinanceUsdmAdapter:
             bars=tuple(parse_kline_row(r) for r in rows),
         )
         await self._publish_rest("rest:klines:1m", text, ev, now)
+
+    async def _candle_reconcile(self, session: aiohttp.ClientSession) -> None:
+        """Jede Minute kurz nach dem Wechsel die letzten abgeschlossenen 1m-Kerzen per REST.
+
+        Der Kline-Stream ist die Live-Quelle; geht dort ein Update verloren (Netz, Reconnect,
+        Ruhezustand), stünde eine Kerze sonst falsch oder fehlte bis zum nächsten Neustart.
+        Nur abgeschlossene Kerzen: die laufende vom REST wäre älter als die vom Stream.
+        Doku: https://developers.binance.com/docs/derivatives/usds-margined-futures/market-data/rest-api/Kline-Candlestick-Data
+        """
+        url = f"{self.cfg.rest_url}/fapi/v1/klines"
+        last_ok: int | None = None
+        while not await sleep_to_minute(self._stop, self.cfg.candle_reconcile_delay_s):
+            now = time.time_ns()
+            n = bars_to_fetch(last_ok, now, self.cfg.candle_reconcile_bars, 1500)
+            params: dict[str, str | int] = {"symbol": self.symbol, "interval": "1m", "limit": n + 1}
+            try:
+                rows, text = await get_json(session, url, params, attempts=2)
+            except RestError as e:
+                log.warning(
+                    "candle reconcile failed", extra={"symbol": self.symbol, "error": str(e)}
+                )
+                continue
+            now = time.time_ns()
+            bars = tuple(b for b in map(parse_kline_row, rows) if b.open_time_ns + MINUTE_NS <= now)
+            last_ok = now
+            if bars:
+                ev = CandleHistory(exchange=EXCHANGE, symbol=self.symbol, ts_recv_ns=now,
+                                   interval="1m", source="futures", bars=bars)  # fmt: skip
+                await self._publish_rest("rest:klines:1m", text, ev, now)
 
     # --- Kennzahlen per REST ------------------------------------------------------------
 

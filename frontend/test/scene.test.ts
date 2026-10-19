@@ -35,6 +35,21 @@ function setup(): SceneParams {
 }
 
 describe("scene", () => {
+  it("nach rechts gescrollt (offset < 0): Daten rücken nach links, nichts aus dem Ringpuffer-Umlauf", () => {
+    const p = setup();
+    // alter Trade in einer weiter zurückliegenden Spalte (Index -1 würde ohne Schutz hierhin laufen)
+    for (let i = 1; i < 16; i++) p.store.pushColumn(1000 + i * 100, true, 130000, Float32Array.from({ length: 8 }, () => 1));
+    p.store.setTrades(1100, [{ side: 1, vwapTicks: 650002, qty: 4, count: 1 }]);
+    const live = new VertexBuilder(64);
+    buildBubbles(p, live);
+    p.view = { ...p.view, offset: -50 };
+    const out = new VertexBuilder(64);
+    buildBubbles(p, out);
+    // gleiche Bubbles (keine Kopien aus k < 0), um 50 Spalten à 4 px nach links verschoben
+    expect(out.n).toBe(live.n);
+    for (let i = 0; i < out.n; i++) expect(out.data[i * STRIDE]).toBeCloseTo(live.data[i * STRIDE]! - 200);
+  });
+
   it("Trade-Bubble liegt exakt auf der Höhe ihres Preises und im richtigen Bucket", () => {
     const p = setup();
     const out = new VertexBuilder(4);

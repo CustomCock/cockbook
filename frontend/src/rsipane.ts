@@ -66,7 +66,7 @@ export function drawRsiPane(
   const rsi = rsiSeries(bars.map((b) => b.c), RSI_PERIOD);
   const last = rsi.length ? rsi[rsi.length - 1]! : NaN;
   const lastVal = Number.isNaN(last) ? null : last;
-  const badge = lastVal !== null && scene?.view.offset === 0 ? yOf(lastVal) : null;
+  const badge = lastVal !== null && scene && scene.view.offset <= 0 ? yOf(lastVal) : null;
   for (const lvl of [RSI_OVERBOUGHT, 50, RSI_OVERSOLD]) {
     // Nicht unter der Marke des aktuellen Werts verstecken
     if (badge === null || Math.abs(yOf(lvl) - badge) > 12) ctx.fillText(String(lvl), pw + 6, yOf(lvl));
@@ -107,7 +107,7 @@ export function drawRsiPane(
   ctx.stroke();
   ctx.restore();
 
-  if (lastVal !== null && scene.view.offset === 0) {
+  if (lastVal !== null && scene.view.offset <= 0) {
     const y = yOf(lastVal);
     ctx.fillStyle = ZONE_COLOR[rsiZone(lastVal)];
     ctx.fillRect(pw + 1, y - 8, AXIS_W - 2, 16);

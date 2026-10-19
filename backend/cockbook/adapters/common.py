@@ -65,6 +65,24 @@ class _StaleConnectionError(Exception):
     pass
 
 
+MINUTE_NS = 60_000_000_000
+
+
+async def sleep_to_minute(stop: asyncio.Event, offset_s: float) -> bool:
+    """Bis ``offset_s`` nach dem nächsten Minutenwechsel (UTC) warten. True = Stop angefordert."""
+    now = time.time()
+    return await sleep_or_stop(stop, 60 - now % 60 + offset_s)
+
+
+def bars_to_fetch(last_ok_ns: int | None, now_ns: int, base: int, cap: int) -> int:
+    """Wie viele 1m-Kerzen der Abgleich holt: ``base`` – nach einer Pause (Verbindung weg,
+    REST-Fehler, Rechner im Ruhezustand) entsprechend mehr, damit keine Lücke bleibt."""
+    if last_ok_ns is None:
+        return base
+    missed = (now_ns - last_ok_ns) // MINUTE_NS
+    return int(min(cap, max(base, missed + base)))
+
+
 async def run_ws(
     session: aiohttp.ClientSession,
     url: str,
