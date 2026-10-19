@@ -1,0 +1,8 @@
+{"type": "system", "subtype": "init", "session_id": "11111111-2222-3333-4444-555555555555", "model": "claude-haiku-5-5", "permissionMode": "dontAsk", "mcp_servers": [{"name": "cockbook", "status": "connected", "source": "dynamic"}], "apiKeySource": "none"}
+{"type": "stream_event", "event": {"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": ""}}, "session_id": "11111111-2222-3333-4444-555555555555"}
+{"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "toolu_01DxuuZy7azyzWqBCXJsMZDL", "name": "mcp__cockbook__list_symbols", "input": {}, "caller": {"type": "direct"}}]}, "session_id": "11111111-2222-3333-4444-555555555555", "parent_tool_use_id": null}
+{"type": "user", "message": {"content": [{"tool_use_id": "toolu_01DxuuZy7azyzWqBCXJsMZDL", "type": "tool_result", "content": "{\"result\":[{\"symbol\":\"BTCUSDT\",\"synced\":true}]}"}]}, "session_id": "11111111-2222-3333-4444-555555555555", "parent_tool_use_id": null}
+{"type": "stream_event", "event": {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Es gibt 13 "}}, "session_id": "11111111-2222-3333-4444-555555555555"}
+{"type": "stream_event", "event": {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Symbole."}}, "session_id": "11111111-2222-3333-4444-555555555555"}
+{"type": "assistant", "message": {"content": [{"type": "text", "text": "Es gibt 13 Symbole."}]}, "session_id": "11111111-2222-3333-4444-555555555555", "parent_tool_use_id": null}
+{"type": "result", "subtype": "success", "is_error": false, "result": "Es gibt 13 Symbole.", "num_turns": 2, "total_cost_usd": 0.00215312, "session_id": "11111111-2222-3333-4444-555555555555"}

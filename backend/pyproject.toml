@@ -66,6 +66,8 @@ testpaths = ["tests"]
 "**/tests/**" = ["ASYNC109", "ASYNC110"]
 # Feste Signatur-Testwerte (64 Hex-Zeichen) + Markierung für den Secret-Scanner
 "**/tests/test_live_bitunix.py" = ["ASYNC109", "ASYNC110", "E501"]
+# Fake-Keys mit Markierung für den Secret-Scanner (muss in derselben Zeile stehen)
+"**/tests/test_ai.py" = ["E501"]
 
 [tool.ruff.lint.isort]
 # explizit, damit Import-Sortierung aus Repo-Root (pre-commit) und backend/ identisch ist

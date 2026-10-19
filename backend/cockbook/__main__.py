@@ -18,6 +18,7 @@ import logging
 import os
 from pathlib import Path
 
+from cockbook.ai.service import AiService
 from cockbook.app import SourceManager, configured_symbols, install_stop_signals
 from cockbook.config import AppConfig, load_config
 from cockbook.core.eventbus import EventBus
@@ -57,6 +58,7 @@ async def run(cfg: AppConfig, symbol: str | None, token: str | None = None) -> N
     install_stop_signals(stop)
     bridge = Bridge(cfg.server, token=token)
     await bridge.start()
+    ai: AiService | None = None
     try:
         async with EventBus() as bus:
             manager = SourceManager(cfg, bus, only_symbol=symbol)
@@ -69,6 +71,13 @@ async def run(cfg: AppConfig, symbol: str | None, token: str | None = None) -> N
             drawings = DrawingStore(cfg.recorder.data_dir / "drawings", cfg.agent)
             bridge.draw_handler = drawings.handle
             bridge.query_handler = AgentApi(feed, cfg.agent).handle
+            # KI-Panel: startet Claude Code / Codex, die über den MCP-Server hierher zurückfragen
+            ai = AiService(
+                cfg.ai,
+                bridge_url=f"ws://127.0.0.1:{cfg.server.port}/ws",
+                data_dir=cfg.recorder.data_dir,
+            )
+            bridge.ai_handler = ai.handle
             paper = (
                 PaperService(cfg.trading.paper, feed.aggs, bus, bridge, cfg.recorder.data_dir)
                 if cfg.trading.paper.enabled
@@ -92,6 +101,8 @@ async def run(cfg: AppConfig, symbol: str | None, token: str | None = None) -> N
                     tg.create_task(paper.run(stop))
                 tg.create_task(live.run(stop))
     finally:
+        if ai is not None:
+            await ai.close()  # laufende KI-Antworten beenden, keine verwaisten Prozesse
         await bridge.stop()
 
 

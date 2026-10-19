@@ -113,6 +113,10 @@ class Bridge:
         self.draw_handler: Callable[[dict[str, Any]], tuple[dict[str, Any], bool]] | None = None
         # Abfragen (Claude/MCP): Orderbuch-Zusammenfassung, Trades, Kerzen …
         self.query_handler: Callable[[dict[str, Any]], dict[str, Any]] | None = None
+        # KI-Panel: Anfrage + Rückkanal zum anfragenden Tab (Antworten kommen gestreamt)
+        self.ai_handler: (
+            Callable[[Callable[[dict[str, Any]], None], dict[str, Any]], Awaitable[None]] | None
+        ) = None
         # Zustand für alle Clients (z. B. Paper-Konto), auch für neu verbundene
         self._shared: dict[str, str] = {}
 
@@ -362,6 +366,9 @@ class Bridge:
                 self.broadcast(text)
             else:
                 client.put(text)
+        elif msg.get("type") == "ai" and self.ai_handler is not None and not client.text_only:
+            # Agenten (MCP) dürfen kein weiteres KI-Programm starten – keine Rekursion
+            self._spawn(self._ai(client, msg))
         elif msg.get("type") == "query" and self.query_handler is not None:
             try:
                 reply = self.query_handler(msg)
@@ -386,6 +393,23 @@ class Bridge:
                      "message": "interner Fehler – siehe Backend-Log", "data": {}}  # fmt: skip
         if client in self._clients:
             client.put(json.dumps(reply))
+
+    async def _ai(self, client: _Client, msg: dict[str, Any]) -> None:
+        assert self.ai_handler is not None
+
+        def send(obj: dict[str, Any]) -> None:
+            if client in self._clients:
+                client.put(json.dumps(obj))
+
+        try:
+            await self.ai_handler(send, msg)
+        except Exception:
+            log.exception("ai request failed", extra={"op": msg.get("op")})
+            for ev in (
+                {"kind": "error", "text": "interner Fehler – siehe Backend-Log"},
+                {"kind": "done"},
+            ):
+                send({"type": "ai_event", "chat": msg.get("chat"), "event": ev})
 
     async def _long(self, client: _Client, sym: str, tier: str, what: str) -> None:
         if self.long_handler is None:

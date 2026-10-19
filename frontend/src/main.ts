@@ -36,6 +36,7 @@ import { DrawingController } from "./drawings/controller";
 import type { Ctx as DrawCtx } from "./drawings/geom";
 import type { Drawing } from "./drawings/model";
 import { DrawToolbar } from "./drawings/toolbar";
+import { AiPanel } from "./aipanel";
 
 takeTokenFromHash();
 const SETTINGS_KEY = "cockbook.settings.v1";
@@ -492,10 +493,19 @@ const conn = connect(
     },
     onConnection(ok) {
       if (!ok) setBadge("sync", "keine Verbindung", "off");
-      else if (drawCtl.key) conn.draw("load", drawCtl.key);
+      else {
+        if (drawCtl.key) conn.draw("load", drawCtl.key);
+        aiPanel.refreshStatus();
+      }
     },
     onDrawings(m) {
       drawCtl.onServer(m.key, m.items as Drawing[]);
+    },
+    onAiStatus(p) {
+      aiPanel.onStatus(p);
+    },
+    onAiEvent(chat, ev) {
+      aiPanel.onEvent(chat, ev);
     },
     onSymbols(s) {
       for (const info of s.symbols) markets.setInfo(info);
@@ -644,6 +654,41 @@ const tradePanel = new TradePanel(
 );
 $<HTMLButtonElement>("tradeBtn").classList.toggle("on", tradePanel.open);
 $<HTMLButtonElement>("tradeBtn").addEventListener("click", () => tradePanel.toggle());
+
+// --- KI-Panel --------------------------------------------------------------------------------
+
+/** Was der Nutzer gerade sieht – geht mit jeder Frage an die KI ("dieser Coin", "hier"). */
+function aiContext(): Record<string, string | number> {
+  const ctx: Record<string, string | number> = {};
+  if (longActive && longView.symbol) {
+    ctx.symbol = longView.symbol;
+    ctx.ansicht = `Langzeit-Heatmap ${longTier}`;
+    return ctx;
+  }
+  if (!currentSymbol) return ctx;
+  ctx.symbol = currentSymbol;
+  ctx.boerse = venueOf(currentSymbol);
+  const m = marketCtx();
+  if (m) ctx.mid = Number(((m.bid + m.ask) / 2).toFixed(8));
+  const d = drawCtx();
+  if (d) {
+    const iso = (t: number) => new Date(t).toISOString().slice(0, 19) + "Z";
+    ctx.sichtbar_von = iso(d.toT(0));
+    ctx.sichtbar_bis = iso(d.toT(d.pw));
+    ctx.preis_unten = Number(d.toP(d.ph).toFixed(8));
+    ctx.preis_oben = Number(d.toP(0).toFixed(8));
+  }
+  if (features.candles) ctx.kerzen_minuten = candleMinutes;
+  return ctx;
+}
+
+const aiPanel = new AiPanel($<HTMLElement>("ai"), conn, aiContext, () => {
+  $<HTMLButtonElement>("aiBtn").classList.toggle("on", aiPanel.open);
+  resize();
+});
+$<HTMLButtonElement>("aiBtn").classList.toggle("on", aiPanel.open);
+$<HTMLButtonElement>("aiBtn").addEventListener("click", () => aiPanel.toggle());
+aiPanel.refreshStatus();
 
 // --- Zeichenwerkzeuge ------------------------------------------------------------------------
 
@@ -928,6 +973,7 @@ window.addEventListener("keydown", (e) => {
   if (e.key === "c" || e.key === "C") goLive();
   if (e.key === "f" || e.key === "F") fitToCandles();
   if ((e.key === "t" || e.key === "T") && !e.ctrlKey && !e.metaKey && !e.altKey) tradePanel.toggle();
+  if ((e.key === "k" || e.key === "K") && !e.altKey) aiPanel.toggle();
 });
 
 /**

@@ -310,6 +310,24 @@ class AgentConfig(_Model):
     book_walls: Annotated[int, Field(ge=1, le=100)] = 10
 
 
+class AiConfig(_Model):
+    """KI-Panel: Claude Code / Codex mit deinem Account (siehe cockbook/ai/)."""
+
+    enabled: bool = True
+    # Pfade zu den Programmen; leer = automatisch suchen (PATH, ~/.local/bin …)
+    claude_path: str | None = None
+    codex_path: str | None = None
+    # Modell; leer = Standard des Programms (bzw. deines Abos)
+    claude_model: str | None = None
+    codex_model: str | None = None
+    # Paper-Orders aus dem Chat (simuliert). Echte Orders gibt es dort nie.
+    allow_paper_orders: bool = False
+    timeout_s: Annotated[float, Field(ge=10, le=3600)] = 300.0
+    status_timeout_s: Annotated[float, Field(ge=1, le=60)] = 15.0
+    max_parallel: Annotated[int, Field(ge=1, le=8)] = 2
+    max_prompt_chars: Annotated[int, Field(ge=100, le=200_000)] = 20_000
+
+
 class AppConfig(_Model):
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     exchanges: list[ExchangeConfig] = Field(default_factory=list)
@@ -320,6 +338,7 @@ class AppConfig(_Model):
     recorder: RecorderConfig = Field(default_factory=RecorderConfig)
     trading: TradingConfig = Field(default_factory=TradingConfig)
     agent: AgentConfig = Field(default_factory=AgentConfig)
+    ai: AiConfig = Field(default_factory=AiConfig)
 
 
 def merge_config(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:

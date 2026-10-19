@@ -1,3 +1,4 @@
+import type { AiEvent, AiProviderStatus } from "./aipanel";
 /** WebSocket-Verbindung zum Backend mit Reconnect. */
 
 import { decode } from "@msgpack/msgpack";
@@ -117,6 +118,9 @@ export interface Handlers {
   onLiveResult?(m: LiveResult): void;
   /** Zeichnungen eines Coins (nach jeder Änderung, auch durch Claude) */
   onDrawings?(m: DrawingsMessage): void;
+  /** KI-Panel: Anmeldestatus der Anbieter, Ereignisse einer Antwort */
+  onAiStatus?(providers: AiProviderStatus[]): void;
+  onAiEvent?(chat: string, ev: AiEvent): void;
 }
 
 export interface DrawingsMessage {
@@ -307,6 +311,8 @@ export interface Connection {
   live(op: string, payload?: Record<string, unknown>): number;
   /** Zeichnungen: put / delete / clear / load (Antwort kommt als "drawings") */
   draw(op: string, key: string, payload?: Record<string, unknown>): void;
+  /** KI-Panel: status / send / stop */
+  ai(op: string, payload?: Record<string, unknown>): void;
   /** Sofort neu verbinden (z. B. nachdem ein Token eingegeben wurde) */
   reconnect(): void;
   close(): void;
@@ -349,6 +355,11 @@ export function connect(url: () => string, h: Handlers, initialSymbol: () => str
         else if (msg.type === "live_state") h.onLive?.(msg as LiveState);
         else if (msg.type === "live_result") h.onLiveResult?.(msg as LiveResult);
         else if (msg.type === "drawings") h.onDrawings?.(msg as DrawingsMessage);
+        else if (msg.type === "ai_status") h.onAiStatus?.((msg as unknown as { providers: AiProviderStatus[] }).providers);
+        else if (msg.type === "ai_event") {
+          const m = msg as unknown as { chat: string; event: AiEvent };
+          h.onAiEvent?.(m.chat, m.event);
+        }
         else if (msg.type === "drawings_error") console.warn("Zeichnung abgelehnt:", (msg as { message?: string }).message);
       } else {
         const f = decode(new Uint8Array(ev.data as ArrayBuffer)) as BinaryFrame | Extract<LongMessage, { t: string }>;
@@ -391,6 +402,7 @@ export function connect(url: () => string, h: Handlers, initialSymbol: () => str
       return req;
     },
     draw: (op: string, key: string, payload: Record<string, unknown> = {}) => send({ type: "draw", op, key, ...payload }),
+    ai: (op: string, payload: Record<string, unknown> = {}) => send({ type: "ai", op, ...payload }),
     longOff: () => {
       longSub = null;
       send({ type: "long_off" });

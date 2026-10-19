@@ -212,19 +212,37 @@ Stil-Leiste der ausgewählten Zeichnung (Farbe, Linie, Füllung, Stufen, Text), 
 `Strg+C`/`Strg+V`, `Entf`. Zeichnungen hängen an Zeit + Preis, gelten je Coin auf allen Börsen und liegen im
 Backend (`data/drawings/`) – jeder offene Tab sieht dieselben, und Claude kann sie lesen und setzen.
 
-**Claude-Erweiterung (MCP):** Claude Desktop oder Claude Code können auf dein laufendes CockBook
-zugreifen – Orderbuch-Wände und Ungleichgewicht, Trade-Delta und große Trades, Kerzen, Funding/OI,
-Paper- und Live-Konto lesen, Zeichnungen in den Chart setzen (markiert mit 🤖) und Paper-Orders
-platzieren (jede mit Rückfrage). **Echte Orders sind über Claude gesperrt** – der MCP-Server schickt
-keine Live-Nachrichten; echtes Trading bleibt im Browser mit Freischaltung und Bestätigung.
-Voraussetzung: CockBook läuft (`make dev` bzw. `start.bat`).
+**KI-Panel – Claude & ChatGPT mit deinem Account** (Knopf „KI“ oben oder Taste `K`): ein Chat
+rechts am Chart wie die Claude- bzw. ChatGPT-Erweiterung in VS Code. CockBook startet dafür das
+offizielle Programm des Anbieters – **Claude Code** bzw. **Codex** – angemeldet mit deinem Abo
+(Claude Pro/Max bzw. ChatGPT Plus/Pro), ohne API-Key. Die KI sieht, welchen Coin und Bereich du gerade
+anschaust, liest Orderbuch-Wände, Trade-Delta, Kerzen und Funding und zeichnet direkt in den Chart
+(🤖 in der Objektliste). **Echte Orders kann sie nicht setzen**; Paper-Orders nur, wenn du
+`ai.allow_paper_orders: true` setzt. Shell, Dateien und Websuche sind für die KI abgeschaltet – sie hat
+nur die CockBook-Werkzeuge.
+
+Einmalig einrichten (je Anbieter, den du nutzen willst):
+
+1. **Claude:** Claude Code installieren – Windows (PowerShell): `irm https://claude.ai/install.ps1 | iex`,
+   Linux/macOS: `curl -fsSL https://claude.ai/install.sh | bash` – dann im Terminal `claude` starten und
+   im Browser mit deinem Claude-Account anmelden. Prüfen: `claude auth status`.
+2. **ChatGPT:** Codex installieren – `npm install -g @openai/codex` – dann `codex login` und mit deinem
+   ChatGPT-Account anmelden. Prüfen: `codex login status` (muss „Logged in using ChatGPT“ zeigen).
+3. CockBook neu starten, „KI“ öffnen: grüner Punkt = angemeldet. Rot = Hinweis im Panel befolgen,
+   dann „Erneut prüfen“.
+
+Die Anmeldung passiert nur im Programm des Anbieters; CockBook liest oder speichert keine Zugangsdaten.
+Ist eine Umgebungsvariable wie `ANTHROPIC_API_KEY` oder `CODEX_API_KEY` gesetzt, entfernt CockBook sie
+für die KI-Programme – abgerechnet wird nur über dein Abo. Programme nicht gefunden? Pfad in
+`config.local.yaml` unter `ai.claude_path` / `ai.codex_path` eintragen (`where claude` bzw. `which claude`).
+
+*Alternativ* lässt sich CockBook auch aus Claude Desktop oder Claude Code heraus nutzen (MCP-Server
+`python -m cockbook.mcp_server`):
 
 - *Claude Code* (im cockbook-Ordner): die Datei `.mcp.json` ist schon da – beim Start von `claude`
-  die Freigabe bestätigen. Oder global: `claude mcp add cockbook -- uv run --directory /pfad/zu/cockbook/backend python -m cockbook.mcp_server`
-- *Claude Desktop* (Erweiterung): `npx @anthropic-ai/mcpb pack extension cockbook.mcpb`, dann die
-  Datei per Doppelklick bzw. Einstellungen → Erweiterungen installieren und den cockbook-Ordner wählen.
-- *Claude Desktop* (von Hand): in `claude_desktop_config.json` (macOS `~/Library/Application Support/Claude/`,
-  Windows `%APPDATA%\Claude\`) eintragen:
+  die Freigabe bestätigen.
+- *Claude Desktop:* in `claude_desktop_config.json` (Windows `%APPDATA%\Claude\`, macOS
+  `~/Library/Application Support/Claude/`) eintragen und Claude Desktop über das Tray-Symbol neu starten:
 
   ```json
   { "mcpServers": { "cockbook": { "command": "uv",

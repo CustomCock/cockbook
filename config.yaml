@@ -156,6 +156,16 @@ agent:                    # Zeichnungen + Zugriff für Claude (MCP-Erweiterung, 
   book_range_pct: 1.0     # Orderbuch-Abfrage: Standard-Bereich ± % um den Mid
   book_walls: 10          # so viele größte Level je Seite
 
+ai:                       # KI-Panel (Knopf "KI"): Claude Code / Codex mit deinem Account
+  enabled: true
+  claude_path: null       # null = automatisch suchen; sonst z. B. C:/Users/NAME/.local/bin/claude.exe
+  codex_path: null
+  claude_model: null      # null = Standard deines Abos (z. B. sonnet, opus)
+  codex_model: null
+  allow_paper_orders: false  # true = der Chat darf Paper-Orders setzen (simuliert)
+  timeout_s: 300          # längste Antwortzeit
+  max_parallel: 2
+
 ui:
   recenter_margin: 0.15   # Auto-Recentering, wenn der Mid in die äußeren 15 % läuft
   bubble_px_per_sqrt_kusd: 1.2  # Bubble-Radius = sqrt(Gegenwert/1000 USDT) * Faktor

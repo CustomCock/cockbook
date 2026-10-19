@@ -1,0 +1,7 @@
+{"type":"thread.started","thread_id":"0199a213-81c0-7800-8aa1-bbab2a035a53"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"reasoning","text":"Orderbuch abfragen"}}
+{"type":"item.started","item":{"id":"item_1","type":"mcp_tool_call","server":"cockbook","tool":"get_orderbook","arguments":{"symbol":"BTCUSDT"},"result":null,"error":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_1","type":"mcp_tool_call","server":"cockbook","tool":"get_orderbook","arguments":{"symbol":"BTCUSDT"},"result":{"content":[{"type":"text","text":"{\"mid\": 65000}"}],"structured_content":null},"error":null,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"Der Mid liegt bei 65.000 USDT."}}
+{"type":"turn.completed","usage":{"input_tokens":1200,"cached_input_tokens":0,"output_tokens":30,"reasoning_output_tokens":0}}

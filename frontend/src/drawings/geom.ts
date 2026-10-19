@@ -280,7 +280,12 @@ export function build(d: Drawing, ctx: Ctx): Prim[] {
     }
     case "hline":
       line([[-BIG, A[1]], [BIG, A[1]]]);
-      text(ctx.pw - 4, A[1] - 9, ctx.fmtP(P[0]!.p) + (s.text ? `  ${s.text}` : ""), { align: "right" });
+    {
+      // rechtsbündig am Rand; passt der Text nicht in die Breite, linksbündig (sonst abgeschnitten)
+      const label = ctx.fmtP(P[0]!.p) + (s.text ? `  ${s.text}` : "");
+      if (textWidth(label, s.fontSize) > ctx.pw - 8) text(4, A[1] - 9, label);
+      else text(ctx.pw - 4, A[1] - 9, label, { align: "right" });
+    }
       break;
     case "hray":
       line([A, [BIG, A[1]]]);
